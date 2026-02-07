@@ -1574,35 +1574,137 @@ def processar_multiplos_certificados(certificados: List[str], senha: str, downlo
     print("="*70)
 
 
+def buscar_certificados_oracle() -> List[dict]:
+    """
+    Busca certificados ativos no Oracle
+    
+    Returns:
+        Lista de dicionários com: arquivo, conteudo (bytes), info
+    """
+    if not ORACLE_AVAILABLE:
+        print("⚠️  Oracle não disponível - usando certificados locais")
+        return []
+    
+    oracle_user = os.getenv("ORACLE_USER")
+    oracle_password = os.getenv("ORACLE_PASSWORD")
+    oracle_dsn = os.getenv("ORACLE_DSN")
+    
+    if not all([oracle_user, oracle_password, oracle_dsn]):
+        print("⚠️  Configurações Oracle não encontradas - usando certificados locais")
+        return []
+    
+    try:
+        print("\n→ Buscando certificados no Oracle...")
+        connection = oracledb.connect(
+            user=oracle_user,
+            password=oracle_password,
+            dsn=oracle_dsn
+        )
+        
+        cursor = connection.cursor()
+        cursor.execute("""
+            SELECT arquivo, conteudo, Info 
+            FROM cert_down_nfse 
+            WHERE INDSITUACAO = 'ATIVO'
+            ORDER BY arquivo
+        """)
+        
+        certificados = []
+        for row in cursor:
+            arquivo = row[0]
+            conteudo = row[1].read() if row[1] else None  # BLOB precisa ser lido
+            info = row[2]
+            
+            if conteudo:
+                certificados.append({
+                    'arquivo': arquivo,
+                    'conteudo': conteudo,
+                    'info': info
+                })
+                print(f"  ✓ {arquivo}")
+                if info:
+                    print(f"    {info}")
+            else:
+                print(f"  ⚠️  {arquivo} - sem conteúdo")
+        
+        cursor.close()
+        connection.close()
+        
+        print(f"✓ Encontrados {len(certificados)} certificados ativos")
+        return certificados
+        
+    except Exception as e:
+        print(f"⚠️  Erro ao buscar certificados do Oracle: {e}")
+        print("   Usando certificados locais como fallback")
+        return []
+
+
+def salvar_certificado_temporario(nome_arquivo: str, conteudo: bytes) -> Path:
+    """
+    Salva certificado em arquivo temporário
+    
+    Args:
+        nome_arquivo: Nome do arquivo original
+        conteudo: Conteúdo binário do certificado
+        
+    Returns:
+        Path do arquivo temporário criado
+    """
+    temp_dir = Path(tempfile.gettempdir()) / "nfse_certs"
+    temp_dir.mkdir(exist_ok=True)
+    
+    temp_file = temp_dir / nome_arquivo
+    temp_file.write_bytes(conteudo)
+    
+    return temp_file
+
+
 def main():
     """Função principal"""
     # Carregar configurações do .env
     dias_retroativos = int(os.getenv("DIAS_RETROATIVOS", "10"))
-    certificados_str = os.getenv("CERTIFICADOS", "certificados/condor_2026.pfx")
     senha = os.getenv("SENHA_CERTIFICADO", "condor")
     download_dir = os.getenv("DIRETORIO_DOWNLOADS", "./downloads_nfse")
-    
-    # Converter string de certificados em lista
-    certificados = [c.strip() for c in certificados_str.split(',') if c.strip()]
     
     print("\n" + "="*70)
     print("  CONFIGURAÇÃO")
     print("="*70)
     print(f"  Dias retroativos: {dias_retroativos}")
-    print(f"  Certificados: {len(certificados)}")
-    for idx, cert in enumerate(certificados, 1):
-        print(f"    {idx}. {cert}")
     print(f"  Diretório downloads: {download_dir}")
     print("="*70)
     
+    # Tentar buscar certificados do Oracle primeiro
+    certificados_oracle = buscar_certificados_oracle()
+    
+    certificados_paths = []
+    
+    if certificados_oracle:
+        print("\n→ Usando certificados do Oracle")
+        # Salvar certificados em arquivos temporários
+        for cert_data in certificados_oracle:
+            temp_path = salvar_certificado_temporario(cert_data['arquivo'], cert_data['conteudo'])
+            certificados_paths.append(str(temp_path))
+            print(f"  → Certificado temporário: {temp_path.name}")
+    else:
+        # Fallback: usar certificados do .env
+        print("\n→ Usando certificados locais (.env)")
+        certificados_str = os.getenv("CERTIFICADOS", "certificados/condor_2026.pfx")
+        certificados_paths = [c.strip() for c in certificados_str.split(',') if c.strip()]
+    
+    print("\n" + "="*70)
+    print(f"  Total de certificados: {len(certificados_paths)}")
+    for idx, cert in enumerate(certificados_paths, 1):
+        print(f"    {idx}. {Path(cert).name}")
+    print("="*70)
+    
     try:
-        if len(certificados) == 1:
+        if len(certificados_paths) == 1:
             # Processar um único certificado
-            agent = NFSePlaywrightAgent(certificados[0], senha, download_dir)
+            agent = NFSePlaywrightAgent(certificados_paths[0], senha, download_dir)
             agent.executar(dias_retroativos=dias_retroativos)
         else:
             # Processar múltiplos certificados
-            processar_multiplos_certificados(certificados, senha, download_dir, dias_retroativos)
+            processar_multiplos_certificados(certificados_paths, senha, download_dir, dias_retroativos)
     except Exception as e:
         print(f"\n✗ Erro: {e}")
         import traceback

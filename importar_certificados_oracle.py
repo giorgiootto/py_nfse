@@ -149,7 +149,7 @@ class ImportadorCertificados:
             print(f"    ⚠️  Erro ao verificar certificado: {e}")
             return False
     
-    def gravar_certificado(self, arquivo: str, cert_info: dict) -> bool:
+    def gravar_certificado(self, arquivo: str, pfx_path: Path, cert_info: dict) -> bool:
         """Grava certificado no Oracle"""
         if not self.connection:
             return False
@@ -167,16 +167,21 @@ class ImportadorCertificados:
             
             info_str = f"Empresa: {empresa} | CNPJ: {cnpj} | Expira em: {expiracao}"
             
+            # Ler conteúdo binário do arquivo .pfx
+            conteudo_pfx = pfx_path.read_bytes()
+            print(f"    → Arquivo lido: {len(conteudo_pfx)} bytes")
+            
             # Inserir
             cursor = self.connection.cursor()
             cursor.execute("""
                 INSERT INTO cert_down_nfse 
-                (arquivo, Info, INDSITUACAO)
-                VALUES (:arquivo, :info, :situacao)
+                (arquivo, Info, INDSITUACAO, conteudo)
+                VALUES (:arquivo, :info, :situacao, :conteudo)
             """, {
                 'arquivo': arquivo,
                 'info': info_str[:4000],  # Limitar a 4000 chars
-                'situacao': 'ATIVO'
+                'situacao': 'ATIVO',
+                'conteudo': conteudo_pfx
             })
             self.connection.commit()
             cursor.close()
@@ -238,7 +243,7 @@ class ImportadorCertificados:
                 # Gravar no banco
                 if self.existe_certificado(arquivo):
                     existentes += 1
-                elif self.gravar_certificado(arquivo, cert_info):
+                elif self.gravar_certificado(arquivo, pfx_path, cert_info):
                     gravados += 1
                 else:
                     erros += 1

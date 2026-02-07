@@ -1,0 +1,157 @@
+<?xml version="1.0" encoding="UTF-8"?><NFSe xmlns="http://www.sped.fazenda.gov.br/nfse" xmlns:ns2="http://www.w3.org/2000/09/xmldsig#" versao="1.00">
+    <infNFSe Id="NFS42082031217208035000202000000000107726020742891359">
+        <xLocEmi>ITAJAÍ</xLocEmi>
+        <xLocPrestacao>ITAJAÍ</xLocPrestacao>
+        <nNFSe>1077</nNFSe>
+        <cLocIncid>4208203</cLocIncid>
+        <xLocIncid>ITAJAÍ</xLocIncid>
+        <xTribNac>14.01.01 Lubrificação, limpeza, lustração, revisão, carga e recarga, conserto, restauração, blindagem, manutenção e conservação de máquinas, veículos, aparelhos, equipamentos, motores, elevadores ou de qualquer objeto (exceto peças e partes empregadas, que ficam sujeitas ao ICMS).</xTribNac>
+        <verAplic>04.01.47.0011</verAplic>
+        <ambGer>1</ambGer>
+        <tpEmis>2</tpEmis>
+        <cStat>100</cStat>
+        <dhProc>2026-02-06T10:32:23-03:00</dhProc>
+        <nDFSe>1077</nDFSe>
+        <emit>
+            <CNPJ>17208035000202</CNPJ>
+            <IM>353530</IM>
+            <xNome>COMPEX SUPORTE TECNICO E SERVICOS EM T.I LTDA</xNome>
+            <xFant>COMPEX SUPORTE TECNICO E SERVICOS EM T.I LTDA</xFant>
+            <enderNac>
+                <xLgr>JOSE GALL</xLgr>
+                <nro>1115</nro>
+                <xCpl>GALPAO 12 SALA 05 COND CENTRO EMP ITAJAÍ</xCpl>
+                <xBairro>CARVALHO</xBairro>
+                <cMun>4208203</cMun>
+                <UF>SC</UF>
+                <CEP>88307102</CEP>
+            </enderNac>
+            <fone>1130309337</fone>
+            <email>contabilidade@compex.br</email>
+        </emit>
+        <valores>
+            <vBC>507.83</vBC>
+            <vISSQN>0.00</vISSQN>
+            <vLiq>507.83</vLiq>
+        </valores>
+        <DPS versao="1.00">
+            <infDPS Id="DPS420820321720803500020201001000000000001081">
+                <tpAmb>1</tpAmb>
+                <dhEmi>2026-02-06T00:00:00-03:00</dhEmi>
+                <verAplic>04.01.47.0011</verAplic>
+                <serie>1001</serie>
+                <nDPS>1081</nDPS>
+                <dCompet>2026-02-06</dCompet>
+                <tpEmit>1</tpEmit>
+                <cLocEmi>4208203</cLocEmi>
+                <prest>
+                    <CNPJ>17208035000202</CNPJ>
+                    <IM>353530</IM>
+                    <fone>1130309337</fone>
+                    <email>contabilidade@compex.br</email>
+                    <regTrib>
+                        <opSimpNac>3</opSimpNac>
+                        <regApTribSN>1</regApTribSN>
+                        <regEspTrib>0</regEspTrib>
+                    </regTrib>
+                </prest>
+                <toma>
+                    <CNPJ>76189406000126</CNPJ>
+                    <xNome>Condor Super Center Limitada</xNome>
+                    <end>
+                        <endNac>
+                            <cMun>4106902</cMun>
+                            <CEP>81930165</CEP>
+                        </endNac>
+                        <xLgr>do Ganchinho</xLgr>
+                        <nro>690</nro>
+                        <xBairro>Umbara</xBairro>
+                    </end>
+                    <email>assistentefiscal2@condor.com.br</email>
+                </toma>
+                <serv>
+                    <locPrest>
+                        <cLocPrestacao>4208203</cLocPrestacao>
+                    </locPrest>
+                    <cServ>
+                        <cTribNac>140101</cTribNac>
+                        <xDescServ>Qtde. Codigo Descricao                                     Total     
+1     3247   2917 - SERVICOS DE MANUTENCAO EM EQUIPAMENTOS R$ 507,83 
+
+ 
+Numero Vencimento Valor     
+1/1    27/02/2026 R$ 507,83 
+
+ 
+ID da Ordem: 304.913 
+Numero do Pedido: NF 4801646 de 21/01/2026
+NS 1835310029  SAT 75.220
+
+Seu Pedido: NF 4801646 de 21/01/2026</xDescServ>
+                        <cIntContrib>47060441</cIntContrib>
+                    </cServ>
+                    <infoCompl>
+                        <xInfComp>| Natureza da operação: 501 - ISS devido a Itajaí, a ser recolhido pelo prestador do serviço via DAS (Simples Nacional)NS 1835310029  SAT 75.220Seu Pedido: NF 4801646 de 21/01/2026 | - Consulte a autenticidade desta Nota Fiscal no portal da NFS-e de Itajaí: http://nfse.itajai.sc.gov.br/- DOCUMENTO FISCAL EMITIDO POR ME OU EPP OPTANTE PELO SIMPLES NACIONAL</xInfComp>
+                    </infoCompl>
+                </serv>
+                <valores>
+                    <vServPrest>
+                        <vServ>507.83</vServ>
+                    </vServPrest>
+                    <trib>
+                        <tribMun>
+                            <tribISSQN>1</tribISSQN>
+                            <tpRetISSQN>1</tpRetISSQN>
+                        </tribMun>
+                        <totTrib>
+                            <vTotTrib>
+                                <vTotTribFed>68.30</vTotTribFed>
+                                <vTotTribEst>0.00</vTotTribEst>
+                                <vTotTribMun>23.82</vTotTribMun>
+                            </vTotTrib>
+                        </totTrib>
+                    </trib>
+                </valores>
+            </infDPS>
+        </DPS>
+    </infNFSe>
+<Signature xmlns="http://www.w3.org/2000/09/xmldsig#"><SignedInfo><CanonicalizationMethod Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315"/><SignatureMethod Algorithm="http://www.w3.org/2000/09/xmldsig#rsa-sha1"/><Reference URI="#NFS42082031217208035000202000000000107726020742891359"><Transforms><Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/><Transform Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315"/></Transforms><DigestMethod Algorithm="http://www.w3.org/2000/09/xmldsig#sha1"/><DigestValue>wvJBXttY/IQVmufKqeD26HjfksU=</DigestValue></Reference></SignedInfo><SignatureValue>t/rHsMjtFpmfhzEUF0o9Hwujm/BkDjFG6rplZ41eAtLNaszUpja6mBbiCTmXkuBPiD+/wOir7FHk&#13;
+KFq9kgIzj5RGEBzVlwU59t1A4vDd+PCFunMRxstHjISTFsnwwtL4Dz+5yzTk7B8fL9RvQbWBnsOQ&#13;
+pF9lyakMYH/2Or2FwQJ1Q2E3hh9DT34Tuy7BFZl3hNqgNkwR3YV2lAtSj0ttJLFyjxIe8ADLUKVn&#13;
+VqcLJK+jFanEoxD/Tq1lAT4ls/ppMe6qgIgCh8550UpfyIWlbwsRn/fDb5i0nj+s2/5a5RV4pLiM&#13;
+6UfUEBhaQa1/qfJvyCOo/3GuJOWre3O5/W6xqA==</SignatureValue><KeyInfo><X509Data><X509Certificate>MIIHzzCCBbegAwIBAgIUUr2DqMKpMCNnAN83AtvgPnEpb4kwDQYJKoZIhvcNAQELBQAwejELMAkG&#13;
+A1UEBhMCQlIxEzARBgNVBAoTCklDUC1CcmFzaWwxNjA0BgNVBAsTLVNlY3JldGFyaWEgZGEgUmVj&#13;
+ZWl0YSBGZWRlcmFsIGRvIEJyYXNpbCAtIFJGQjEeMBwGA1UEAxMVQUMgRElHSVRBTFNJR04gUkZC&#13;
+IEczMB4XDTI2MDExNDIxMTQwMFoXDTI3MDExNDIxMTQwMFowgesxCzAJBgNVBAYTAkJSMRMwEQYD&#13;
+VQQKDApJQ1AtQnJhc2lsMQswCQYDVQQIDAJTQzEPMA0GA1UEBwwGSXRhamFpMTYwNAYDVQQLDC1T&#13;
+ZWNyZXRhcmlhIGRhIFJlY2VpdGEgRmVkZXJhbCBkbyBCcmFzaWwgLSBSRkIxFjAUBgNVBAsMDVJG&#13;
+QiBlLUNOUEogQTExFzAVBgNVBAsMDjIwNjEzNDk2MDAwMTg2MRMwEQYDVQQLDApwcmVzZW5jaWFs&#13;
+MSswKQYDVQQDDCJNVU5JQ0lQSU8gREUgSVRBSkFJOjgzMTAyMjc3MDAwMTUyMIIBIjANBgkqhkiG&#13;
+9w0BAQEFAAOCAQ8AMIIBCgKCAQEA7wVedQnx3YzYtmFl05dHN8EjvSh3yns3gU0j9/hvObXM2Eoe&#13;
+83A9mKpBga3TlQ7xdVEmVH1TcG4vt/2y/lSP9S6McNn21RUOwu1XeIPHGvZ6GWL6iyO+DX2urBdJ&#13;
+jJo06FDErpc2/n4qZbLgINPkW63XR1PPs916NEVcKt8valnLX199d51V+P1tHRIyFeEqnID7Oke1&#13;
+/xJVeHk4RymleimQPijTlcqOdoj1+PGTF/MmGbEgq8ZlaxWjqfo/7xO1Vu1NsOPjmv+6z+1tDf5f&#13;
+bsLtI2h0tF1KTFwUaqPFiYa0Y9WcDOy08Abxyi3UrF6zoQa0tWGU1hQcv/cgn4ywNQIDAQABo4IC&#13;
+2TCCAtUwCQYDVR0TBAIwADAfBgNVHSMEGDAWgBTduLXdAty4UMp+BlRDwX78rvStezCBqAYIKwYB&#13;
+BQUHAQEEgZswgZgwXQYIKwYBBQUHMAKGUWh0dHA6Ly93d3cuZGlnaXRhbHNpZ25jZXJ0aWZpY2Fk&#13;
+b3JhLmNvbS5ici9yZXBvc2l0b3Jpby9yZmIvQUNESUdJVEFMU0lHTlJGQkczLnA3YjA3BggrBgEF&#13;
+BQcwAYYraHR0cDovL29jc3AuZGlnaXRhbHNpZ25jZXJ0aWZpY2Fkb3JhLmNvbS5icjBdBgNVHSAE&#13;
+VjBUMFIGBmBMAQIBLDBIMEYGCCsGAQUFBwIBFjpodHRwOi8vd3d3LmRpZ2l0YWxzaWduY2VydGlm&#13;
+aWNhZG9yYS5jb20uYnIvcmVwb3NpdG9yaW8vcmZiMB0GA1UdJQQWMBQGCCsGAQUFBwMCBggrBgEF&#13;
+BQcDBDCBsQYDVR0fBIGpMIGmMFegVaBThlFodHRwOi8vd3d3LmRpZ2l0YWxzaWduY2VydGlmaWNh&#13;
+ZG9yYS5jb20uYnIvcmVwb3NpdG9yaW8vcmZiL0FDRElHSVRBTFNJR05SRkJHMy5jcmwwS6BJoEeG&#13;
+RWh0dHA6Ly93d3cuZGlnaXRhbHRydXN0LmNvbS5ici9yZXBvc2l0b3Jpby9yZmIvQUNESUdJVEFM&#13;
+U0lHTlJGQkczLmNybDAOBgNVHQ8BAf8EBAMCBeAwgbkGA1UdEQSBsTCBroEedGhpYWdvLm1pZ3Vl&#13;
+bEBpdGFqYWkuc2MuZ292LmJyoDgGBWBMAQMEoC8ELTIxMDYxOTc4MDI0OTAwNDA5NzkwMDAwMDAw&#13;
+MDAwMDAwMDAwMDAwMDAwMDAwMKAeBgVgTAEDAqAVBBNST0JJU09OIEpPU0UgQ09FTEhPoBkGBWBM&#13;
+AQMDoBAEDjgzMTAyMjc3MDAwMTUyoBcGBWBMAQMHoA4EDDAwMDAwMDAwMDAwMDANBgkqhkiG9w0B&#13;
+AQsFAAOCAgEAMcY8tJ+R7nR2Ar/hJ7UX5Rw7wMkMBdZ/wywYNnMsrA9aC6MstpvPbwCD279KsZIA&#13;
+9i/Ne3WYJjikq8mBkqN4iAUReYT15gXnJj+WC54khe2kFGYYj53lPKXqdtUeI6i7Do5b35Qir89W&#13;
+LNQfp7pKAo39mjdI04YjFfFEjVKNw/LXSYIUtIYr6hHDpEFni5SPC6GSXWJX4zNupsuwCQzD062T&#13;
+zHSz5uYTKiN4EI1Xq1Lr1G7JOvRsTMxn+vsLvoalXQdTN8N5elj7w0LpuwFilvwX7VkHeMlttCZN&#13;
+saEJnSHUy+tVpOXKqXqSFNHPE1vRQF7VKrkvxYPGTokzDC0FmEbe4rk3M2degwb9rNHh+t63C0qw&#13;
+qpqyTwWWvCxgvZBJjnYEOSCajnHeq9qay81Sv/d9nruc/N1Jbx/3GmkcCYXZiESiBXTXH8L/2VtG&#13;
+yJO3p/8qL3Bd+9qpLgP/Y4jerkuAQXSJ2856XNES58wyEK5v512bSxkmc57qTZd2sxP8f0yfKUV4&#13;
+qamSttNx/m/aOhZqzNpOyaTNHxpRa27BE7KA29hmSiewrN/vp08GTEiI365aazj1O+NXxeF2ABKa&#13;
+6Gp0p2zz3Gz0c8djTBC8z1vdoal/ueSYza1NjbaK0vgHd6W7ciKaqOb0+dpSZnUArayyG+PLppmr&#13;
+rPI44SKpkds=</X509Certificate></X509Data></KeyInfo></Signature></NFSe>
