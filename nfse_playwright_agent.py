@@ -1,0 +1,1240 @@
+"""
+Agente NFSe com Playwright para seleção automática de certificado digital
+Acessa o portal https://www.nfse.gov.br/EmissorNacional/Login
+"""
+
+import os
+import time
+import subprocess
+import tempfile
+import winreg
+import threading
+import requests  # Para download direto via HTTP
+from pathlib import Path
+from datetime import datetime
+from typing import Optional, List
+from playwright.sync_api import sync_playwright, Page, Browser, BrowserContext
+
+try:
+    import pyautogui
+    PYAUTOGUI_AVAILABLE = True
+except ImportError:
+    PYAUTOGUI_AVAILABLE = False
+    print("⚠️  PyAutoGUI não disponível. Instale com: pip install pyautogui")
+
+try:
+    from pywinauto import Application
+    from pywinauto.findwindows import find_windows
+    PYWINAUTO_AVAILABLE = True
+except ImportError:
+    PYWINAUTO_AVAILABLE = False
+    print("⚠️  PyWinAuto não disponível. Instale com: pip install pywinauto")
+
+
+class NFSePlaywrightAgent:
+    """Agente para automação de download de NFSe com seleção automática de certificado"""
+    
+    PORTAL_URL = "https://www.nfse.gov.br/EmissorNacional/Login"
+    
+    def __init__(self, pfx_path: str, pfx_password: str, download_dir: str = "./downloads"):
+        """
+        Inicializa o agente
+        
+        Args:
+            pfx_path: Caminho do arquivo .pfx
+            pfx_password: Senha do certificado
+            download_dir: Diretório para downloads
+        """
+        self.pfx_path = Path(pfx_path)
+        self.pfx_password = pfx_password
+        self.download_dir = Path(download_dir)
+        self.download_dir.mkdir(parents=True, exist_ok=True)
+        
+        if not self.pfx_path.exists():
+            raise FileNotFoundError(f"Certificado não encontrado: {pfx_path}")
+    
+    def _auto_click_certificate_dialog(self, timeout: int = 30) -> bool:
+        """
+        Detecta e clica automaticamente no botão OK da janela de certificado
+        usando pywinauto para automação robusta do Windows
+        
+        Args:
+            timeout: Tempo máximo de espera em segundos
+            
+        Returns:
+            True se conseguiu clicar
+        """
+        if not PYWINAUTO_AVAILABLE:
+            print("⚠️  PyWinAuto não disponível - tentando método alternativo")
+            return self._auto_click_certificate_simple(timeout)
+        
+        try:
+            print("\n→ Procurando janela de certificado...")
+            start_time = time.time()
+            
+            while time.time() - start_time < timeout:
+                try:
+                    # Procurar janela com título contendo "certificado" (case insensitive)
+                    windows = find_windows(title_re=".*[Cc]ertificado.*")
+                    
+                    if windows:
+                        hwnd = windows[0]
+                        print(f"✓ Janela de certificado encontrada (HWND: {hwnd})")
+                        
+                        # Conectar à janela
+                        app = Application(backend="win32").connect(handle=hwnd)
+                        dlg = app.window(handle=hwnd)
+                        
+                        # Aguardar janela estar pronta
+                        dlg.wait('ready', timeout=5)
+                        time.sleep(1)
+                        
+                        # Tentar selecionar o primeiro item da lista (se houver)
+                        try:
+                            # Procurar por ListView ou ListBox
+                            if dlg.child_window(class_name="SysListView32").exists():
+                                list_view = dlg.child_window(class_name="SysListView32")
+                                list_view.set_focus()
+                                list_view.type_keys("{HOME}")  # Ir para o primeiro item
+                                time.sleep(0.5)
+                                print("✓ Certificado selecionado na lista")
+                        except:
+                            pass
+                        
+                        # Procurar e clicar no botão OK
+                        try:
+                            # Tentar várias formas de encontrar o botão OK
+                            ok_button = None
+                            
+                            # Método 1: Por texto "OK"
+                            try:
+                                ok_button = dlg.child_window(title="OK", class_name="Button")
+                            except:
+                                pass
+                            
+                            # Método 2: Por texto "&OK" (com hotkey)
+                            if not ok_button or not ok_button.exists():
+                                try:
+                                    ok_button = dlg.child_window(title_re=".*OK.*", class_name="Button")
+                                except:
+                                    pass
+                            
+                            # Método 3: Pressionar Enter (mais seguro)
+                            if ok_button and ok_button.exists():
+                                ok_button.click()
+                                print("✓ Botão OK clicado!")
+                                return True
+                            else:
+                                # Fallback: pressionar Enter
+                                dlg.type_keys("{ENTER}")
+                                print("✓ Enter pressionado (botão OK não encontrado)")
+                                return True
+                                
+                        except Exception as e:
+                            print(f"⚠️  Erro ao clicar OK, tentando Enter: {e}")
+                            dlg.type_keys("{ENTER}")
+                            return True
+                            
+                except Exception as e:
+                    pass
+                
+                time.sleep(0.5)
+            
+            print("⚠️  Janela de certificado não encontrada no timeout")
+            return False
+            
+        except Exception as e:
+            print(f"⚠️  Erro na automação: {e}")
+            return False
+    
+    def _auto_click_certificate_simple(self, timeout: int = 30) -> bool:
+        """
+        Método alternativo simples usando pyautogui (fallback)
+        """
+        if not PYAUTOGUI_AVAILABLE:
+            return False
+        
+        print("\n→ Procurando janela de certificado...")
+        
+        start_time = time.time()
+        
+        while time.time() - start_time < timeout:
+            try:
+                # Procurar pelo botão OK na tela
+                button_location = None
+                
+                # Tentar encontrar o texto "OK" na tela
+                try:
+                    button_location = pyautogui.locateOnScreen('ok_button.png', confidence=0.8)
+                except:
+                    pass
+                
+                # Se não encontrar pela imagem, tentar por coordenadas aproximadas
+                # A janela geralmente aparece centralizada
+                if button_location is None:
+                    # Obter dimensões da tela
+                    screen_width, screen_height = pyautogui.size()
+                    
+                    # Posição aproximada do botão OK (centro-direita da janela)
+                    # Baseado na imagem fornecida
+                    x = screen_width // 2 + 100  # Aproximadamente 100px à direita do centro
+                    y = screen_height // 2 + 130  # Aproximadamente 130px abaixo do centro
+                    
+                    # Mover mouse para a posição e verificar se há botão
+                    pyautogui.moveTo(x, y, duration=0.5)
+                    time.sleep(0.3)
+                    
+                    # Clicar
+                    pyautogui.click(x, y)
+                    print(f"✓ Clicou em posição aproximada do botão OK ({x}, {y})")
+                    
+                    time.sleep(2)  # Aguardar processamento
+                    return True
+                else:
+                    # Se encontrou pela imagem, clicar no centro
+                    button_x = button_location.left + button_location.width // 2
+                    button_y = button_location.top + button_location.height // 2
+                    pyautogui.click(button_x, button_y)
+                    print("✓ Botão OK clicado (detectado por imagem)")
+                    return True
+                    
+            except Exception as e:
+                pass
+            
+            time.sleep(0.5)  # Aguardar antes de tentar novamente
+        
+        print("⚠️  Não foi possível encontrar o botão OK automaticamente")
+        return False
+    
+    def _configure_chrome_registry_policy(self, cert_info: dict) -> bool:
+        """
+        Configura política do Chrome no Registry do Windows para auto-seleção de certificado
+        
+        Args:
+            cert_info: Informações do certificado
+            
+        Returns:
+            True se configurado com sucesso
+        """
+        try:
+            print("\n→ Configurando política AutoSelectCertificateForUrls no Registry...")
+            
+            # Extrair CN do Issuer para o filtro
+            issuer_cn = "AC"  # Default
+            if cert_info and 'Issuer' in cert_info:
+                issuer = cert_info['Issuer']
+                # Extrair CN do Issuer (ex: CN=AC Certisign RFB G5)
+                import re
+                match = re.search(r'CN=([^,]+)', issuer)
+                if match:
+                    issuer_cn = match.group(1).strip()
+            
+            # Formato da política: JSON string com padrão e filtro
+            # O filtro pode ser por ISSUER.CN ou SUBJECT.CN
+            policy_value = f'{{"pattern":"https://www.nfse.gov.br","filter":{{}}}}'
+            
+            print(f"   Issuer CN detectado: {issuer_cn}")
+            print(f"   Política: {policy_value}")
+            
+            # Comando PowerShell para criar a chave no Registry
+            ps_command = f"""
+            # Criar chave de políticas do Chrome (usuário atual)
+            $regPath = "HKCU:\\SOFTWARE\\Policies\\Google\\Chrome"
+            $regKey = "AutoSelectCertificateForUrls"
+            
+            # Criar estrutura se não existir
+            if (!(Test-Path $regPath)) {{
+                New-Item -Path $regPath -Force | Out-Null
+                Write-Host "Chave de políticas criada"
+            }}
+            
+            # Criar a subchave para lista de valores
+            $policyPath = "$regPath\\$regKey"
+            if (!(Test-Path $policyPath)) {{
+                New-Item -Path $policyPath -Force | Out-Null
+            }}
+            
+            # Adicionar o valor (índice 1)
+            Set-ItemProperty -Path $policyPath -Name "1" -Value '{policy_value}' -Type String
+            
+            Write-Host "Política AutoSelectCertificateForUrls configurada com sucesso"
+            """
+            
+            result = subprocess.run(
+                ["powershell", "-Command", ps_command],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if result.returncode == 0:
+                print("✓ Política do Chrome configurada no Registry")
+                print("   IMPORTANTE: Feche todos os Chrome abertos e reinicie")
+                return True
+            else:
+                print(f"⚠️  Erro ao configurar Registry: {result.stderr}")
+                return False
+                
+        except Exception as e:
+            print(f"⚠️  Erro ao configurar política: {e}")
+            return False
+    
+    def _get_certificate_info(self) -> dict:
+        """
+        Extrai informações do certificado .pfx usando PowerShell
+        
+        Returns:
+            Dicionário com subject, issuer, thumbprint do certificado
+        """
+        try:
+            print("\n→ Extraindo informações do certificado...")
+            
+            ps_command = f"""
+            $pwd = ConvertTo-SecureString -String '{self.pfx_password}' -Force -AsPlainText
+            $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2('{self.pfx_path.absolute()}', $pwd)
+            
+            # Extrair CN do Subject (apenas o nome)
+            $subject = $cert.Subject
+            $issuer = $cert.Issuer
+            $thumbprint = $cert.Thumbprint
+            
+            # Extrair apenas o CN (Common Name)
+            if ($subject -match 'CN=([^,]+)') {{
+                $cn = $matches[1]
+            }} else {{
+                $cn = $subject
+            }}
+            
+            # Retornar JSON
+            @{{
+                Subject = $cn
+                Issuer = $issuer
+                Thumbprint = $thumbprint
+                FullSubject = $subject
+            }} | ConvertTo-Json -Compress
+            """
+            
+            result = subprocess.run(
+                ["powershell", "-Command", ps_command],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if result.returncode == 0:
+                import json
+                cert_info = json.loads(result.stdout.strip())
+                print(f"✓ Certificado: {cert_info['Subject']}")
+                return cert_info
+            else:
+                print(f"⚠️  Não foi possível extrair info do certificado")
+                return {}
+                
+        except Exception as e:
+            print(f"⚠️  Erro ao extrair info: {e}")
+            return {}
+    
+    def _install_certificate_windows(self) -> bool:
+        """
+        Instala o certificado .pfx no Windows (CurrentUser\\My)
+        
+        Returns:
+            True se instalado com sucesso
+        """
+        try:
+            print("\n→ Instalando certificado no Windows...")
+            
+            # Comando PowerShell para importar o certificado
+            ps_command = f"""
+            $pwd = ConvertTo-SecureString -String '{self.pfx_password}' -Force -AsPlainText
+            Import-PfxCertificate -FilePath '{self.pfx_path.absolute()}' -CertStoreLocation Cert:\\CurrentUser\\My -Password $pwd -Exportable
+            """
+            
+            result = subprocess.run(
+                ["powershell", "-Command", ps_command],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if result.returncode == 0:
+                print("✓ Certificado instalado no Windows")
+                return True
+            else:
+                print(f"✗ Erro ao instalar certificado: {result.stderr}")
+                return False
+                
+        except Exception as e:
+            print(f"✗ Erro ao instalar certificado: {e}")
+            return False
+    
+    def _configure_chrome_auto_select(self, cert_info: dict) -> Optional[str]:
+        """
+        Configura o Chrome para selecionar automaticamente o certificado específico
+        
+        Args:
+            cert_info: Dicionário com informações do certificado (subject, issuer, thumbprint)
+            
+        Returns:
+            Caminho do diretório do perfil do Chrome
+        """
+        try:
+            print("\n→ Configurando auto-seleção de certificado no Chrome...")
+            
+            # Criar diretório temporário para perfil do Chrome
+            profile_dir = Path(tempfile.mkdtemp(prefix="chrome_nfse_"))
+            
+            # Criar estrutura do perfil
+            default_dir = profile_dir / "Default"
+            default_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Configurar preferências do Chrome para auto-selecionar certificado
+            preferences = {
+                "profile": {
+                    "content_settings": {
+                        "exceptions": {
+                            "auto_select_certificate": {
+                                "https://www.nfse.gov.br:443,*": {
+                                    "setting": 1
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            # Salvar preferências
+            prefs_file = default_dir / "Preferences"
+            import json
+            with open(prefs_file, 'w') as f:
+                json.dump(preferences, f, indent=2)
+            
+            print(f"✓ Perfil Chrome configurado em: {profile_dir}")
+            
+            # Configurar política do Chrome via arquivo JSON (método mais confiável)
+            # AutoSelectCertificateForUrls com filtro específico
+            if cert_info:
+                print(f"   Certificado configurado: {cert_info.get('Subject', 'N/A')}")
+            
+            return str(profile_dir)
+            
+        except Exception as e:
+            print(f"✗ Erro ao configurar auto-seleção: {e}")
+            return None
+    
+    def _setup_browser(self):
+        """
+        Configura o navegador Chromium com suporte a certificado
+        
+        Returns:
+            Tupla (context, page, playwright)
+        """
+        print("\n→ Iniciando navegador...")
+        
+        playwright = sync_playwright().start()
+        
+        # Extrair informações do certificado
+        cert_info = self._get_certificate_info()
+        
+        # Configurar perfil com auto-seleção
+        profile_dir = self._configure_chrome_auto_select(cert_info)
+        
+        # Argumentos do Chrome para aceitar certificados
+        browser_args = [
+            "--ignore-certificate-errors",
+            "--disable-web-security",
+            "--allow-insecure-localhost",
+            "--disable-blink-features=AutomationControlled",
+            "--use-system-default-printer",  # Usar configurações do sistema
+            "--enable-features=WebUIDarkMode",  # Recursos extras
+            "--disable-features=IsolateOrigins,site-per-process",  # Facilitar acesso
+        ]
+        
+        # Adicionar flag para aceitar automaticamente certificados de cliente
+        # Esta é a chave para auto-seleção!
+        browser_args.append("--auto-select-desktop-capture-source=Entire screen")
+        
+        print("   Configurando Chrome para auto-seleção de certificado...")
+        
+        # Usar launch_persistent_context quando precisar de user_data_dir
+        if profile_dir:
+            context = playwright.chromium.launch_persistent_context(
+                user_data_dir=profile_dir,
+                headless=False,
+                args=browser_args,
+                slow_mo=500,
+                accept_downloads=True,
+                viewport={"width": 1920, "height": 1080}
+            )
+        else:
+            # Fallback para launch normal
+            browser = playwright.chromium.launch(
+                headless=False,
+                args=browser_args,
+                slow_mo=500
+            )
+            context = browser.new_context(
+                accept_downloads=True,
+                viewport={"width": 1920, "height": 1080}
+            )
+        
+        page = context.pages[0] if context.pages else context.new_page()
+        
+        print("✓ Navegador iniciado")
+        return context, page, playwright
+    
+    def login_com_certificado(self, page: Page) -> bool:
+        """
+        Realiza login com certificado digital
+        
+        Args:
+            page: Página do Playwright
+            
+        Returns:
+            True se login bem-sucedido
+        """
+        try:
+            print("\n→ Acessando portal NFSe...")
+            page.goto(self.PORTAL_URL, wait_until="networkidle")
+            time.sleep(3)  # Aguardar renderização completa
+            
+            print("\n→ Procurando botão 'Acesso via certificado digital'...")
+            
+            # Tentar diferentes seletores com múltiplas tentativas
+            selectors = [
+                'a.img-certificado',
+                'a[href="/EmissorNacional/Certificado"]',
+                'a[href*="Certificado"]',
+                'text=Acesso via certificado digital',
+                'a:has-text("certificado digital")',
+                'button:has-text("certificado digital")',
+                'a[title*="certificado"]',
+                '.certificado',
+                '#certificado',
+                'div:has-text("certificado digital")'
+            ]
+            
+            clicked = False
+            
+            # Fazer 3 tentativas
+            for tentativa in range(3):
+                if clicked:
+                    break
+                    
+                print(f"   Tentativa {tentativa + 1}/3...")
+                
+                for selector in selectors:
+                    try:
+                        locator = page.locator(selector)
+                        count = locator.count()
+                        if count > 0:
+                            print(f"   ✓ Encontrado {count} elemento(s) com: {selector}")
+                            locator.first.click(timeout=10000, force=True)
+                            print("   ✓ Botão clicado com sucesso!")
+                            clicked = True
+                            time.sleep(4)  # Aguardar popup do certificado
+                            break
+                    except Exception as e:
+                        continue
+                
+                if not clicked and tentativa < 2:
+                    time.sleep(2)  # Aguardar antes de nova tentativa
+            
+            if not clicked:
+                print("\n⚠️  Botão não encontrado automaticamente após 3 tentativas")
+                print("   Por favor, clique manualmente em 'Acesso via certificado digital'")
+                input("   Pressione ENTER após clicar...")
+            
+            # Aguardar seleção de certificado
+            print("\n→ Aguardando seleção de certificado...")
+            print("   Por favor, selecione o certificado e clique em OK")
+            print("   (Aguardando até 60 segundos...)")
+            
+            # Aguardar redirecionamento após login
+            print("\n→ Aguardando conclusão do login...")
+            page.wait_for_load_state("networkidle", timeout=60000)
+            
+            # Verificar se login foi bem-sucedido
+            success_indicators = [
+                'text=Notas Recebidas',
+                'text=Notas Emitidas',
+                'text=Bem-vindo',
+                '.user-info',
+                'button:has-text("Sair")',
+                'a:has-text("Sair")'
+            ]
+            
+            for indicator in success_indicators:
+                try:
+                    if page.locator(indicator).count() > 0:
+                        print("✓ Login realizado com sucesso!")
+                        return True
+                except:
+                    continue
+            
+            # Verificar pela URL
+            current_url = page.url
+            if "Login" not in current_url:
+                print("✓ Login assumido como bem-sucedido (redirecionado)")
+                return True
+            
+            print("⚠️  Não foi possível confirmar o login automaticamente")
+            confirmar = input("   Login realizado? (s/n): ").strip().lower()
+            return confirmar == 's'
+            
+        except Exception as e:
+            print(f"✗ Erro durante login: {e}")
+            return False
+    
+    def navegar_notas_recebidas(self, page: Page) -> bool:
+        """
+        Navega até a seção de Notas Recebidas e aplica filtro de data
+        
+        Args:
+            page: Página do Playwright
+            
+        Returns:
+            True se navegação bem-sucedida
+        """
+        try:
+            print("\n→ Navegando para Notas Recebidas...")
+            
+            # Navegar diretamente para a URL
+            page.goto("https://www.nfse.gov.br/EmissorNacional/Notas/Recebidas", wait_until="networkidle")
+            print("✓ Página de Notas Recebidas carregada")
+            
+            time.sleep(3)  # Aguardar renderização completa
+            
+            # Calcular datas (hoje - 10 dias até hoje)
+            from datetime import datetime, timedelta
+            data_final = datetime.now()
+            data_inicial = data_final - timedelta(days=10)
+            
+            # Formatar datas (tentar vários formatos)
+            formato_br = data_inicial.strftime("%d/%m/%Y")
+            formato_iso = data_inicial.strftime("%Y-%m-%d")
+            
+            formato_br_final = data_final.strftime("%d/%m/%Y")
+            formato_iso_final = data_final.strftime("%Y-%m-%d")
+            
+            print(f"\n→ Aplicando filtro de data:")
+            print(f"   Data inicial: {formato_br} (últimos 10 dias)")
+            print(f"   Data final: {formato_br_final} (hoje)")
+            
+            # Usar os seletores exatos fornecidos
+            try:
+                # Preencher data inicial: id="datainicio"
+                campo_inicial = page.locator('#datainicio')
+                if campo_inicial.count() > 0:
+                    campo_inicial.click()
+                    campo_inicial.fill(formato_br)
+                    print(f"   ✓ Data inicial preenchida: {formato_br}")
+                else:
+                    print("   ⚠️  Campo data inicial não encontrado")
+            except Exception as e:
+                print(f"   ⚠️  Erro ao preencher data inicial: {e}")
+            
+            time.sleep(0.5)
+            
+            try:
+                # Preencher data final: id="datafim"
+                campo_final = page.locator('#datafim')
+                if campo_final.count() > 0:
+                    campo_final.click()
+                    campo_final.fill(formato_br_final)
+                    print(f"   ✓ Data final preenchida: {formato_br_final}")
+                else:
+                    print("   ⚠️  Campo data final não encontrado")
+            except Exception as e:
+                print(f"   ⚠️  Erro ao preencher data final: {e}")
+            
+            time.sleep(0.5)
+            
+            # Clicar no botão Filtrar: button[type="submit"].btn.btn-primary
+            print("\n→ Clicando no botão Filtrar...")
+            try:
+                botao_filtrar = page.locator('button[type="submit"].btn.btn-primary')
+                if botao_filtrar.count() > 0:
+                    botao_filtrar.first.click()
+                    print("   ✓ Botão Filtrar clicado")
+                else:
+                    print("   ⚠️  Botão Filtrar não encontrado")
+                    input("   Por favor, clique manualmente e pressione ENTER...")
+            except Exception as e:
+                print(f"   ⚠️  Erro ao clicar Filtrar: {e}")
+                input("   Por favor, clique manualmente e pressione ENTER...")
+            
+            # Aguardar resultados
+            page.wait_for_load_state("networkidle", timeout=30000)
+            time.sleep(2)
+            
+            print("✓ Filtro aplicado com sucesso")
+            return True
+            
+        except Exception as e:
+            print(f"✗ Erro ao navegar/filtrar: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    def baixar_ultimas_notas(self, page: Page, quantidade: int = 999999) -> int:
+        """
+        Baixa XMLs e PDFs de todas as notas, navegando por todas as páginas
+        
+        Args:
+            page: Página do Playwright
+            quantidade: Quantidade máxima de notas (padrão: ilimitado)
+            
+        Returns:
+            Quantidade de notas processadas
+        """
+        try:
+            print(f"\n→ Baixando TODAS as notas (navegando por todas as páginas)...")
+            
+            total_downloaded = 0
+            pagina_atual = 1
+            processo_start_time = time.time()  # Tempo de início do processo
+            notas_pagina_anterior = set()  # Para detectar páginas repetidas
+            
+            while total_downloaded < quantidade:
+                print(f"\n{'='*60}")
+                print(f"  PÁGINA {pagina_atual}")
+                print(f"{'='*60}")
+                
+                # Aguardar carregamento da lista
+                time.sleep(3)
+                
+                # Tentar encontrar linhas/cards de notas
+                row_selectors = [
+                    'div.list-group-item',  # Cards com list-group-item
+                    'div.nota-item',
+                    'tr:has(td)',  # Linhas de tabela
+                    'div[data-nota]',
+                    '.resultado-nota'
+                ]
+                
+                rows = []
+                for selector in row_selectors:
+                    try:
+                        elements = page.locator(selector).all()
+                        if len(elements) > 0:
+                            # Limitar pela quantidade restante
+                            quantidade_restante = quantidade - total_downloaded
+                            rows = elements[:quantidade_restante]
+                            print(f"✓ Encontradas {len(elements)} notas nesta página (processando {len(rows)})")
+                            break
+                    except:
+                        continue
+                
+                if not rows:
+                    print("⚠️  Nenhuma nota encontrada nesta página")
+                    break
+                
+                print(f"✓ Encontradas {len(rows)} notas nesta página")
+                
+                # Coletar números das notas desta página para detectar loop
+                notas_pagina_atual = set()
+                
+                # Processar cada nota da página
+                for idx, row in enumerate(rows, 1):
+                    nota_start_time = time.time()
+                    try:
+                        tempo_total = time.time() - processo_start_time
+                        minutos = int(tempo_total // 60)
+                        segundos = int(tempo_total % 60)
+                        print(f"\n  [{total_downloaded + 1}] Processando nota {idx}/{len(rows)} da página {pagina_atual}... [Tempo total: {minutos}m {segundos}s]")
+                        
+                        # PASSO 0: SCROLL para tornar a linha visível
+                        try:
+                            row.scroll_into_view_if_needed(timeout=5000)
+                            time.sleep(0.3)
+                        except Exception as e:
+                            print(f"    ⚠️  Erro ao rolar linha: {e}")
+                        
+                        # NOVA ABORDAGEM: Extrair número da nota DIRETO da linha, sem abrir menu
+                        print(f"    → Extraindo número da nota...")
+                        nota_numero = None
+                        
+                        # Tentar extrair de links existentes (mesmo invisíveis)
+                        try:
+                            # Procurar qualquer link com "Download" na linha
+                            links = row.locator('a[href*="Download"]').all()
+                            if len(links) > 0:
+                                href = links[0].get_attribute('href')
+                                if href:
+                                    parts = href.split('/')
+                                    nota_numero = parts[-1]
+                                    print(f"    ✓ Número extraído do link ({len(nota_numero)} dígitos): {nota_numero}")
+                        except:
+                            pass
+                        
+                        # Alternativa: procurar texto do número na linha
+                        if not nota_numero:
+                            try:
+                                texto = row.inner_text()
+                                # Procurar número de 50 dígitos (padrão da NFSe)
+                                import re
+                                match = re.search(r'\b(\d{50})\b', texto)
+                                if match:
+                                    nota_numero = match.group(1)
+                                    print(f"    ✓ Número extraído do texto (50 dígitos): {nota_numero}")
+                                else:
+                                    # Fallback: 44 ou 48 dígitos
+                                    match = re.search(r'\b(\d{44,50})\b', texto)
+                                    if match:
+                                        nota_numero = match.group(1)
+                                        print(f"    ✓ Número extraído do texto ({len(nota_numero)} dígitos): {nota_numero}")
+                            except:
+                                pass
+                        
+                        # Validar tamanho do número
+                        if nota_numero and len(nota_numero) > 50:
+                            print(f"    ⚠️  Número muito longo ({len(nota_numero)} dígitos) - tentando corrigir...")
+                            # NFSe geralmente tem 44 ou 50 dígitos, pegar os primeiros
+                            import re
+                            matches = re.findall(r'\d{44,50}', nota_numero)
+                            if matches:
+                                nota_numero = matches[0]
+                                print(f"    → Corrigido para: {nota_numero} ({len(nota_numero)} dígitos)")
+                        
+                        if not nota_numero:
+                            print(f"    ⚠️  Não conseguiu extrair número da nota - PULANDO")
+                            continue
+                        
+                        # Adicionar ao set de notas desta página
+                        notas_pagina_atual.add(nota_numero)
+                        
+                        # Verificar timeout
+                        if time.time() - nota_start_time > 30:
+                            print(f"    ⚠️  TIMEOUT de 30s - PULANDO nota")
+                            continue
+                        
+                        # PASSO 1: Baixar XML direto (SEM ABRIR MENU!)
+                        print(f"    → Baixando XML diretamente...")
+                        xml_start = time.time()
+                        xml_downloaded = self._download_file_direct(page, nota_numero, "XML")
+                        xml_elapsed = time.time() - xml_start
+                        print(f"    → Download XML: {xml_elapsed:.1f}s")
+                        
+                        # PASSO 2: Baixar PDF direto (SEM ABRIR MENU!)
+                        print(f"    → Baixando PDF diretamente...")
+                        pdf_start = time.time()
+                        pdf_downloaded = self._download_file_direct(page, nota_numero, "PDF")
+                        pdf_elapsed = time.time() - pdf_start
+                        print(f"    → Download PDF: {pdf_elapsed:.1f}s")
+                        
+                        if xml_downloaded or pdf_downloaded:
+                            total_downloaded += 1
+                        
+                        # Aguardar antes da próxima nota
+                        time.sleep(0.5)
+                        
+                        # Log de tempo gasto
+                        elapsed = time.time() - nota_start_time
+                        print(f"    ⏱️  Tempo gasto: {elapsed:.1f}s")
+                        
+                    except Exception as e:
+                        print(f"    ✗ ERRO ao processar nota: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        # Tentar fechar menu mesmo com erro
+                        try:
+                            page.keyboard.press("Escape")
+                            time.sleep(0.5)
+                        except:
+                            pass
+                        continue
+                
+                # VERIFICAR SE ESTÁ EM LOOP (mesmas notas da página anterior)
+                if notas_pagina_atual and notas_pagina_atual == notas_pagina_anterior:
+                    print(f"\n{'='*60}")
+                    print(f"⚠️  LOOP DETECTADO: Mesmas notas da página anterior!")
+                    print(f"   Última página real foi: {pagina_atual}")
+                    print(f"   Parando navegação...")
+                    print(f"{'='*60}")
+                    break
+                
+                # Atualizar notas da página anterior para próxima iteração
+                notas_pagina_anterior = notas_pagina_atual.copy()
+                
+                # Verificar se já baixou o suficiente
+                if total_downloaded >= quantidade:
+                    print(f"\n✓ Processamento concluído")
+                    break
+                
+                # PASSO 4: Tentar ir para próxima página
+                print(f"\n{'='*60}")
+                print(f"→ Procurando link para próxima página...")
+                
+                # Limpar qualquer modal/menu aberto antes de navegar
+                print(f"    → Limpando menus/modais antes de mudar de página...")
+                try:
+                    for _ in range(5):
+                        page.keyboard.press("Escape", timeout=1000)
+                        time.sleep(0.2)
+                except:
+                    pass
+                
+                # Scroll para o topo antes de procurar paginação
+                try:
+                    page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    time.sleep(0.5)
+                except:
+                    pass
+                
+                next_page_selectors = [
+                    'a[href*="pg="]:has(i.fa-angle-right)',
+                    'a[data-original-title="Próxima"]',
+                    'a[title*="Próxima"]',
+                    'a:has-text("Próxima")',
+                    'a.pagination-next',
+                    'li.next a'
+                ]
+                
+                next_page_found = False
+                for selector in next_page_selectors:
+                    try:
+                        links = page.locator(selector).all()
+                        if len(links) > 0:
+                            link = links[0]
+                            if link.is_visible():
+                                print(f"    ✓ Link encontrado - Indo para página {pagina_atual + 1}...")
+                                link.click()
+                                print(f"    → Aguardando carregamento...")
+                                page.wait_for_load_state("networkidle", timeout=30000)
+                                pagina_atual += 1
+                                next_page_found = True
+                                time.sleep(3)  # Aguardar estabilização da nova página
+                                print(f"    ✓ Página {pagina_atual} carregada")
+                                break
+                    except Exception as e:
+                        print(f"    ⚠️  Erro ao navegar: {e}")
+                        continue
+                
+                if not next_page_found:
+                    print("    ✓ Não há mais páginas - Download completo!")
+                    break
+            
+            print(f"\n{'='*60}")
+            print(f"✓ Total de notas processadas: {total_downloaded}")
+            print(f"✓ Arquivos salvos em: {self.download_dir}")
+            print(f"{'='*60}")
+            
+            return total_downloaded
+            
+        except Exception as e:
+            print(f"✗ Erro ao baixar notas: {e}")
+            import traceback
+            traceback.print_exc()
+            return 0
+    
+    def _download_file_direct(self, page: Page, nota_numero: str, file_type: str) -> bool:
+        """
+        Baixa arquivo diretamente via HTTP sem abrir menu
+        
+        Args:
+            page: Página do Playwright
+            nota_numero: Número da nota (44-50 dígitos)
+            file_type: "XML" ou "PDF"
+            
+        Returns:
+            True se baixado com sucesso
+        """
+        try:
+            # Construir URL baseado no tipo
+            if file_type == "XML":
+                url_path = f"/Notas/Download/NFSe/{nota_numero}"
+                extensao = ".xml"
+            else:  # PDF
+                url_path = f"/Notas/Download/DANFSe/{nota_numero}"
+                extensao = ".pdf"
+            
+            filepath = self.download_dir / f"{nota_numero}{extensao}"
+            
+            # Verificar se já existe
+            if filepath.exists():
+                print(f"    ⊘ {file_type} já existe: {nota_numero}{extensao}")
+                return False
+            
+            # Obter cookies para autenticação
+            cookies = page.context.cookies()
+            session = requests.Session()
+            for cookie in cookies:
+                session.cookies.set(cookie['name'], cookie['value'], domain=cookie['domain'])
+            
+            # URL completa - CORRIGIR duplicação
+            # page.url é algo como: https://www.nfse.gov.br/EmissorNacional/Notas/Recebidas?pg=2
+            # Queremos: https://www.nfse.gov.br/EmissorNacional/Notas/Download/NFSe/...
+            base_url = page.url.split('/Notas')[0]  # https://www.nfse.gov.br/EmissorNacional
+            full_url = base_url + url_path
+            
+            print(f"    → URL: {full_url}")
+            
+            # Download via HTTP
+            response = session.get(full_url, timeout=10, stream=True)
+            
+            print(f"    → Status HTTP: {response.status_code}")
+            
+            if response.status_code == 200:
+                with open(filepath, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                
+                if filepath.exists() and filepath.stat().st_size > 0:
+                    print(f"    ✓ {file_type} baixado: {nota_numero}{extensao} ({filepath.stat().st_size} bytes)")
+                    return True
+                else:
+                    print(f"    ✗ {file_type} vazio")
+                    return False
+            elif response.status_code == 404:
+                print(f"    ⚠️  {file_type} não encontrado no servidor (HTTP 404)")
+                print(f"    → Possível que esta nota não tenha {file_type} disponível")
+                return False
+            else:
+                print(f"    ⚠️  HTTP {response.status_code} para {file_type}")
+                return False
+                
+        except Exception as e:
+            print(f"    ✗ Erro ao baixar {file_type}: {e}")
+            return False
+    
+    def _download_file(self, page: Page, row, file_type: str, url_pattern: str, selectors: list, keep_menu_open: bool = False) -> bool:
+        """
+        Baixa um arquivo (XML ou PDF) se ainda não existir
+        
+        Args:
+            page: Página do Playwright
+            row: Elemento da linha/card da nota
+            file_type: Tipo do arquivo ("XML" ou "PDF")
+            url_pattern: Padrão na URL (ex: "Download/NFSe")
+            selectors: Lista de seletores para encontrar o link
+            keep_menu_open: Se True, não fecha o menu após download (útil para baixar XML e PDF sequencialmente)
+            
+        Returns:
+            True se arquivo foi baixado ou já existe
+        """
+        try:
+            # Procurar o link dentro do row primeiro
+            for selector in selectors:
+                try:
+                    links = row.locator(selector).all()
+                    if len(links) > 0:
+                        link = links[0]
+                        
+                        # Extrair número da nota da URL para usar como nome do arquivo
+                        href = link.get_attribute('href')
+                        if href:
+                            # Extrair o número da NFSe da URL
+                            # Ex: /EmissorNacional/Notas/Download/NFSe/41069022282040130000112000000000029926027515362055
+                            parts = href.split('/')
+                            if len(parts) > 0:
+                                nota_numero = parts[-1]
+                                
+                                # Nome do arquivo baseado no número da nota
+                                if file_type == "XML":
+                                    filename = f"{nota_numero}.xml"
+                                else:
+                                    filename = f"{nota_numero}.pdf"
+                                
+                                filepath = self.download_dir / filename
+                                
+                                # Verificar se arquivo já existe
+                                if filepath.exists():
+                                    print(f"    ⏭️  {file_type} já existe: {filename}")
+                                    return True
+                                
+                                # NOVA ABORDAGEM: Download direto via HTTP
+                                print(f"    ↓ Baixando {file_type} via HTTP...")
+                                try:
+                                    # Obter cookies para autenticação
+                                    cookies = page.context.cookies()
+                                    session = requests.Session()
+                                    for cookie in cookies:
+                                        session.cookies.set(cookie['name'], cookie['value'], domain=cookie['domain'])
+                                    
+                                    # URL completa
+                                    if href.startswith('http'):
+                                        full_url = href
+                                    else:
+                                        base_url = page.url.split('/Notas')[0]
+                                        full_url = base_url + href if href.startswith('/') else base_url + '/' + href
+                                    
+                                    # Download via requests
+                                    response = session.get(full_url, timeout=10, stream=True)
+                                    
+                                    if response.status_code == 200:
+                                        with open(filepath, 'wb') as f:
+                                            for chunk in response.iter_content(chunk_size=8192):
+                                                f.write(chunk)
+                                        
+                                        if filepath.exists() and filepath.stat().st_size > 0:
+                                            print(f"    ✓ {file_type} baixado: {filename} ({filepath.stat().st_size} bytes)")
+                                            return True
+                                    else:
+                                        print(f"    ⚠️  HTTP {response.status_code} - tentando Playwright...")
+                                        raise Exception("Fallback para Playwright")
+                                        
+                                except Exception as http_err:
+                                    # Fallback: Playwright download
+                                    print(f"    → Usando Playwright download...")
+                                    try:# Scroll do link antes de clicar
+                                        link.scroll_into_view_if_needed(timeout=3000)
+                                        time.sleep(0.3)
+                                        
+                                        with page.expect_download(timeout=10000) as download_info:
+                                            link.click(timeout=5000, force=True)
+                                        
+                                        download = download_info.value
+                                        download.save_as(str(filepath))
+                                        time.sleep(0.2)
+                                        
+                                        # Limpar download do navegador
+                                        try:
+                                            download.cancel()
+                                        except:
+                                            pass
+                                        
+                                        if filepath.exists():
+                                            print(f"    ✓ {file_type} baixado: {filename}")
+                                            # Não fechar menu se keep_menu_open=True
+                                            if not keep_menu_open:
+                                                try:
+                                                    page.keyboard.press("Escape", timeout=1000)
+                                                except:
+                                                    pass
+                                            print(f"    ✓ {file_type} baixado: {filename}")
+                                            return True
+                                    except Exception as pw_err:
+                                        print(f"    ✗ Falha total: HTTP={http_err}, PW={pw_err}")
+                                        return False
+                        
+                except Exception as e:
+                    continue
+            
+            # Se não encontrou no row, tentar na página inteira (menu pode estar fora)
+            for selector in selectors:
+                try:
+                    links = page.locator(selector).all()
+                    for link in links:
+                        if link.is_visible():
+                            href = link.get_attribute('href')
+                            if href:
+                                parts = href.split('/')
+                                if len(parts) > 0:
+                                    nota_numero = parts[-1]
+                                    
+                                    if file_type == "XML":
+                                        filename = f"{nota_numero}.xml"
+                                    else:
+                                        filename = f"{nota_numero}.pdf"
+                                    
+                                    filepath = self.download_dir / filename
+                                    
+                                    if filepath.exists():
+                                        print(f"    ⏭️  {file_type} já existe: {filename}")
+                                        return True
+                                    
+                                    with page.expect_download(timeout=15000) as download_info:
+                                        link.click()
+                                    
+                                    download = download_info.value
+                                    download.save_as(str(filepath))
+                                    print(f"    ✓ {file_type} baixado: {filename}")
+                                    return True
+                except Exception as e:
+                    continue
+            
+            print(f"    ⚠️  Link de {file_type} não encontrado")
+            return False
+            
+        except Exception as e:
+            print(f"    ⚠️  Erro ao baixar {file_type}: {e}")
+            return False
+    
+    def executar(self, quantidade: int = 999999):
+        """
+        Executa o processo completo
+        
+        Args:
+            quantidade: Quantidade máxima de notas (padrão: todas)
+        """
+        context = None
+        playwright = None
+        
+        try:
+            print("="*70)
+            print("  AGENTE NFSe - Download Automático de Notas")
+            print("="*70)
+            
+            # 1. Extrair informações do certificado
+            cert_info = self._get_certificate_info()
+            
+            # 2. Configurar política do Chrome no Registry
+            print("\n→ Configurando auto-seleção de certificado...")
+            self._configure_chrome_registry_policy(cert_info)
+            
+            # 3. Instalar certificado no Windows
+            self._install_certificate_windows()
+            
+            # 4. Configurar e iniciar navegador
+            context, page, playwright = self._setup_browser()
+            
+            # 5. Login com certificado
+            if not self.login_com_certificado(page):
+                print("\n✗ Falha no login. Encerrando...")
+                return
+            
+            # 6. Navegar para notas recebidas
+            if not self.navegar_notas_recebidas(page):
+                print("\n✗ Falha na navegação. Encerrando...")
+                return
+            
+            # 7. Baixar notas
+            downloaded = self.baixar_ultimas_notas(page, quantidade)
+            
+            print("\n" + "="*70)
+            print("  PROCESSO CONCLUÍDO!")
+            print(f"  Total de notas processadas: {downloaded}")
+            print(f"  Arquivos em: {self.download_dir}")
+            print("="*70)
+            
+            time.sleep(3)  # Aguardar 3 segundos antes de fechar
+            
+        except Exception as e:
+            print(f"\n✗ Erro durante execução: {e}")
+            import traceback
+            traceback.print_exc()
+            
+        finally:
+            if context:
+                context.close()
+            if playwright:
+                playwright.stop()
+
+
+def main():
+    """Função principal"""
+    print("\n" + "="*70)
+    print("  AGENTE NFSe - DOWNLOAD AUTOMÁTICO")
+    print("="*70 + "\n")
+    
+    # Configuração padrão - sem perguntas
+    PFX_PATH = "certificados/condor_2026.pfx"
+    PFX_PASSWORD = "condor"
+    DOWNLOAD_DIR = "./downloads_nfse"
+    
+    print(f"✓ Certificado: {PFX_PATH}")
+    print(f"✓ Diretório de download: {DOWNLOAD_DIR}")
+    print(f"✓ Modo: TODAS as notas disponíveis\n")
+    
+    try:
+        agent = NFSePlaywrightAgent(PFX_PATH, PFX_PASSWORD, DOWNLOAD_DIR)
+        agent.executar()  # Sem limite de quantidade
+    except Exception as e:
+        print(f"\n✗ Erro: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+if __name__ == "__main__":
+    main()
