@@ -10,6 +10,7 @@ import tempfile
 import winreg
 import threading
 import requests  # Para download direto via HTTP
+import socket  # Para pegar nome da máquina
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict
@@ -18,6 +19,15 @@ from dotenv import load_dotenv
 
 # Carregar variáveis de ambiente
 load_dotenv()
+
+# Importar oracledb
+try:
+    import oracledb
+    ORACLE_AVAILABLE = True
+except ImportError:
+    ORACLE_AVAILABLE = False
+    print("⚠️  oracledb não instalado - gravação no Oracle desabilitada")
+    print("   Instale com: pip install oracledb")
 
 try:
     import pyautogui
@@ -56,6 +66,23 @@ class NFSePlaywrightAgent:
         
         if not self.pfx_path.exists():
             raise FileNotFoundError(f"Certificado não encontrado: {pfx_path}")
+        
+        # Configurações Oracle
+        self.oracle_enabled = ORACLE_AVAILABLE and os.getenv("ORACLE_USER")
+        self.oracle_user = os.getenv("ORACLE_USER")
+        self.oracle_password = os.getenv("ORACLE_PASSWORD")
+        self.oracle_dsn = os.getenv("ORACLE_DSN")
+        self.oracle_connection = None
+        
+        # Informações da máquina para log
+        self.machine_name = socket.gethostname()
+        self.machine_ip = socket.gethostbyname(self.machine_name)
+        self.usuario_log = f"{self.machine_name} ({self.machine_ip})"
+        
+        if self.oracle_enabled:
+            print(f"✓ Oracle habilitado: {self.oracle_user}@{self.oracle_dsn}")
+        else:
+            print("⚠️  Oracle desabilitado - arquivos só serão salvos localmente")
     
     def _auto_click_certificate_dialog(self, timeout: int = 30) -> bool:
         """
@@ -209,6 +236,135 @@ class NFSePlaywrightAgent:
         
         print("⚠️  Não foi possível encontrar o botão OK automaticamente")
         return False
+    
+    def _conectar_oracle(self) -> bool:
+        """Conecta ao Oracle se ainda não conectado"""
+        if not self.oracle_enabled:
+            return False
+        
+        try:
+            if self.oracle_connection is None or not self.oracle_connection.ping():
+                self.oracle_connection = oracledb.connect(
+                    user=self.oracle_user,
+                    password=self.oracle_password,
+                    dsn=self.oracle_dsn
+                )
+            return True
+        except Exception as e:
+            print(f"⚠️  Erro ao conectar Oracle: {e}")
+            self._log_oracle('ERROR', 'AGENT', f"Erro conexão: {e}", None)
+            return False
+    
+    def _log_oracle(self, nivel: str, origem: str, mensagem: str, chave: Optional[str]):
+        """
+        Grava log no Oracle
+        
+        Args:
+            nivel: ERROR, WARN, INFO, DEBUG
+            origem: Nome do processo/origem
+            mensagem: Mensagem de log
+            chave: Chave do documento (opcional)
+        """
+        if not self.oracle_enabled:
+            return
+        
+        try:
+            if not self._conectar_oracle():
+                return
+            
+            cursor = self.oracle_connection.cursor()
+            cursor.execute("""
+                INSERT INTO ADM.log_processamento 
+                (nivel, origem, mensagem, chave_documento, usuario)
+                VALUES (:nivel, :origem, :mensagem, :chave, :usuario)
+            """, {
+                'nivel': nivel,
+                'origem': origem,
+                'mensagem': mensagem[:4000],  # Limitar a 4000 chars
+                'chave': chave,
+                'usuario': self.usuario_log[:50]  # Limitar a 50 chars
+            })
+            self.oracle_connection.commit()
+            cursor.close()
+        except Exception as e:
+            print(f"⚠️  Erro ao gravar log: {e}")
+    
+    def _existe_no_oracle(self, chave: str) -> bool:
+        """Verifica se a chave já existe no Oracle"""
+        if not self.oracle_enabled:
+            return False
+        
+        try:
+            if not self._conectar_oracle():
+                return False
+            
+            cursor = self.oracle_connection.cursor()
+            cursor.execute("""
+                SELECT COUNT(*) FROM down_nfse WHERE CHAVE = :chave
+            """, {'chave': chave})
+            result = cursor.fetchone()
+            cursor.close()
+            return result[0] > 0
+        except Exception as e:
+            self._log_oracle('ERROR', 'AGENT', f"Erro verificar existência: {e}", chave)
+            return False
+    
+    def _gravar_oracle(self, chave: str, xml_path: Path, pdf_path: Path) -> bool:
+        """
+        Grava XML e PDF no Oracle
+        
+        Args:
+            chave: Chave da NFSe (50 dígitos)
+            xml_path: Caminho do arquivo XML
+            pdf_path: Caminho do arquivo PDF
+            
+        Returns:
+            True se gravado com sucesso
+        """
+        if not self.oracle_enabled:
+            return False
+        
+        try:
+            # Verificar se já existe
+            if self._existe_no_oracle(chave):
+                print(f"    ⊘ Já existe no Oracle: {chave}")
+                return True
+            
+            if not self._conectar_oracle():
+                return False
+            
+            # Ler arquivos
+            xml_content = xml_path.read_text(encoding='utf-8') if xml_path.exists() else None
+            pdf_content = pdf_path.read_bytes() if pdf_path.exists() else None
+            
+            if not xml_content and not pdf_content:
+                self._log_oracle('WARN', 'AGENT', 'Nenhum arquivo para gravar', chave)
+                return False
+            
+            # Inserir no banco
+            cursor = self.oracle_connection.cursor()
+            cursor.execute("""
+                INSERT INTO down_nfse 
+                (DOCXML, DOCBLOB, ORIGEM, SITUACAO, CHAVE)
+                VALUES (:xml, :pdf, :origem, :situacao, :chave)
+            """, {
+                'xml': xml_content,
+                'pdf': pdf_content,
+                'origem': 'AGENT',
+                'situacao': 0,
+                'chave': chave
+            })
+            self.oracle_connection.commit()
+            cursor.close()
+            
+            print(f"    ✓ Gravado no Oracle: {chave}")
+            self._log_oracle('INFO', 'AGENT', f'NFSe gravada com sucesso', chave)
+            return True
+            
+        except Exception as e:
+            print(f"    ✗ Erro ao gravar no Oracle: {e}")
+            self._log_oracle('ERROR', 'AGENT', f"Erro ao gravar: {e}", chave)
+            return False
     
     def _configure_chrome_registry_policy(self, cert_info: dict) -> bool:
         """
@@ -917,6 +1073,13 @@ class NFSePlaywrightAgent:
                         pdf_elapsed = time.time() - pdf_start
                         print(f"    → Download PDF: {pdf_elapsed:.1f}s")
                         
+                        # PASSO 3: Gravar no Oracle (se habilitado)
+                        if self.oracle_enabled and (xml_downloaded or pdf_downloaded):
+                            print(f"    → Gravando no Oracle...")
+                            xml_path = self.download_dir / f"{nota_numero}.xml"
+                            pdf_path = self.download_dir / f"{nota_numero}.pdf"
+                            self._gravar_oracle(nota_numero, xml_path, pdf_path)
+                        
                         # Contar apenas novos downloads (não existentes)
                         if xml_downloaded or pdf_downloaded:
                             total_downloaded += 1
@@ -1317,6 +1480,13 @@ class NFSePlaywrightAgent:
                 context.close()
             if playwright:
                 playwright.stop()
+            # Fechar conexão Oracle
+            if self.oracle_connection:
+                try:
+                    self.oracle_connection.close()
+                    print("✓ Conexão Oracle fechada")
+                except:
+                    pass
 
 
 def processar_multiplos_certificados(certificados: List[str], senha: str, download_dir: str, dias_retroativos: int):
