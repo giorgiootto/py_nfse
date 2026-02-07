@@ -12,7 +12,7 @@ import threading
 import requests  # Para download direto via HTTP
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Optional, List
+from typing import Optional, List, Dict
 from playwright.sync_api import sync_playwright, Page, Browser, BrowserContext
 from dotenv import load_dotenv
 
@@ -372,6 +372,61 @@ class NFSePlaywrightAgent:
             print(f"✗ Erro ao instalar certificado: {e}")
             return False
     
+    def _uninstall_certificate_windows(self) -> bool:
+        """
+        Remove o certificado instalado do Windows Store (CurrentUser\\My)
+        
+        Returns:
+            True se removido com sucesso
+        """
+        try:
+            print("\n→ Removendo certificado do Windows Store...")
+            
+            # Obter thumbprint do certificado
+            cert_info = self._get_certificate_info()
+            if not cert_info or 'Thumbprint' not in cert_info:
+                print("⚠️  Não foi possível obter thumbprint do certificado")
+                return False
+            
+            thumbprint = cert_info['Thumbprint']
+            
+            # Comando PowerShell para remover o certificado pelo thumbprint
+            ps_command = f"""
+            $cert = Get-ChildItem -Path Cert:\\CurrentUser\\My | Where-Object {{ $_.Thumbprint -eq '{thumbprint}' }}
+            if ($cert) {{
+                Remove-Item -Path "Cert:\\CurrentUser\\My\\$($cert.Thumbprint)" -Force
+                Write-Output "Removido"
+            }} else {{
+                Write-Output "NaoEncontrado"
+            }}
+            """
+            
+            result = subprocess.run(
+                ["powershell", "-Command", ps_command],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if result.returncode == 0:
+                output = result.stdout.strip()
+                if "Removido" in output:
+                    print(f"✓ Certificado removido (Thumbprint: {thumbprint[:16]}...)")
+                    return True
+                elif "NaoEncontrado" in output:
+                    print(f"⚠️  Certificado não encontrado no Windows Store")
+                    return True  # Considerar sucesso se já não está lá
+                else:
+                    print(f"⚠️  Resposta inesperada: {output}")
+                    return False
+            else:
+                print(f"✗ Erro ao remover certificado: {result.stderr}")
+                return False
+                
+        except Exception as e:
+            print(f"✗ Erro ao remover certificado: {e}")
+            return False
+    
     def _configure_chrome_auto_select(self, cert_info: dict) -> Optional[str]:
         """
         Configura o Chrome para selecionar automaticamente o certificado específico
@@ -426,10 +481,13 @@ class NFSePlaywrightAgent:
             print(f"✗ Erro ao configurar auto-seleção: {e}")
             return None
     
-    def _setup_browser(self):
+    def _setup_browser(self, cert_info: Dict[str, str] = None):
         """
         Configura o navegador Chromium com suporte a certificado
         
+        Args:
+            cert_info: Dicionário com informações do certificado (opcional, se None extrai novamente)
+            
         Returns:
             Tupla (context, page, playwright)
         """
@@ -437,8 +495,9 @@ class NFSePlaywrightAgent:
         
         playwright = sync_playwright().start()
         
-        # Extrair informações do certificado
-        cert_info = self._get_certificate_info()
+        # Extrair informações do certificado (se não fornecido)
+        if cert_info is None:
+            cert_info = self._get_certificate_info()
         
         # Configurar perfil com auto-seleção
         profile_dir = self._configure_chrome_auto_select(cert_info)
@@ -500,7 +559,11 @@ class NFSePlaywrightAgent:
         try:
             print("\n→ Acessando portal NFSe...")
             page.goto(self.PORTAL_URL, wait_until="networkidle")
-            time.sleep(3)  # Aguardar renderização completa
+            time.sleep(5)  # Aguardar renderização completa (aumentado de 3 para 5s)
+            
+            # Debug: verificar URL e título da página
+            print(f"   URL atual: {page.url}")
+            print(f"   Título: {page.title()}")
             
             print("\n→ Procurando botão 'Acesso via certificado digital'...")
             
@@ -510,22 +573,41 @@ class NFSePlaywrightAgent:
                 'a[href="/EmissorNacional/Certificado"]',
                 'a[href*="Certificado"]',
                 'text=Acesso via certificado digital',
-                'a:has-text("certificado digital")',
-                'button:has-text("certificado digital")',
+                'a:has-text("certificado")',
+                'button:has-text("certificado")',
                 'a[title*="certificado"]',
                 '.certificado',
                 '#certificado',
-                'div:has-text("certificado digital")'
+                'div:has-text("certificado") a',
+                'img[alt*="certificado"]',
+                'a:has(img[alt*="certificado"])'
             ]
             
             clicked = False
             
-            # Fazer 3 tentativas
-            for tentativa in range(3):
+            # Fazer 5 tentativas (aumentado de 3 para 5)
+            for tentativa in range(5):
                 if clicked:
                     break
                     
-                print(f"   Tentativa {tentativa + 1}/3...")
+                print(f"   Tentativa {tentativa + 1}/5...")
+                
+                # Debug: listar todos os links visíveis
+                if tentativa == 0:
+                    try:
+                        links = page.locator('a').all()
+                        print(f"   DEBUG: Encontrados {len(links)} links na página")
+                        # Mostrar primeiros 10 links
+                        for i, link in enumerate(links[:10]):
+                            try:
+                                texto = link.inner_text(timeout=1000)
+                                href = link.get_attribute('href')
+                                if texto or href:
+                                    print(f"      Link {i+1}: '{texto[:50] if texto else '(sem texto)'}' -> {href}")
+                            except:
+                                pass
+                    except:
+                        pass
                 
                 for selector in selectors:
                     try:
@@ -533,21 +615,28 @@ class NFSePlaywrightAgent:
                         count = locator.count()
                         if count > 0:
                             print(f"   ✓ Encontrado {count} elemento(s) com: {selector}")
-                            locator.first.click(timeout=10000, force=True)
-                            print("   ✓ Botão clicado com sucesso!")
-                            clicked = True
-                            time.sleep(4)  # Aguardar popup do certificado
-                            break
+                            try:
+                                locator.first.scroll_into_view_if_needed(timeout=5000)
+                                time.sleep(0.5)
+                                locator.first.click(timeout=10000, force=True)
+                                print("   ✓ Botão clicado com sucesso!")
+                                clicked = True
+                                time.sleep(4)  # Aguardar popup do certificado
+                                break
+                            except Exception as click_error:
+                                print(f"      ✗ Erro ao clicar: {click_error}")
+                                continue
                     except Exception as e:
                         continue
                 
-                if not clicked and tentativa < 2:
-                    time.sleep(2)  # Aguardar antes de nova tentativa
+                if not clicked and tentativa < 4:
+                    time.sleep(3)  # Aguardar 3s antes de nova tentativa
             
             if not clicked:
-                print("\n⚠️  Botão não encontrado automaticamente após 3 tentativas")
+                print("\n⚠️  Botão não encontrado automaticamente após 5 tentativas")
                 print("   Por favor, clique manualmente em 'Acesso via certificado digital'")
-                input("   Pressione ENTER após clicar...")
+                print("   Pressione ENTER após clicar...")
+                input("   > ")
             
             # Aguardar seleção de certificado
             print("\n→ Aguardando seleção de certificado...")
@@ -737,13 +826,17 @@ class NFSePlaywrightAgent:
                 notas_pagina_atual = set()
                 
                 # Processar cada nota da página
+                notas_tentadas = 0  # Contador de notas tentadas (incluindo existentes)
+                novas_baixadas = 0  # Contador de novas notas baixadas
+                
                 for idx, row in enumerate(rows, 1):
                     nota_start_time = time.time()
+                    notas_tentadas += 1
                     try:
                         tempo_total = time.time() - processo_start_time
                         minutos = int(tempo_total // 60)
                         segundos = int(tempo_total % 60)
-                        print(f"\n  [{total_downloaded + 1}] Processando nota {idx}/{len(rows)} da página {pagina_atual}... [Tempo total: {minutos}m {segundos}s]")
+                        print(f"\n  [{total_downloaded + 1}] Processando nota {idx}/{len(rows)} da página {pagina_atual}... [Tentadas: {notas_tentadas}, Novas: {novas_baixadas}] [Tempo: {minutos}m {segundos}s]")
                         
                         # PASSO 0: SCROLL para tornar a linha visível
                         try:
@@ -824,8 +917,15 @@ class NFSePlaywrightAgent:
                         pdf_elapsed = time.time() - pdf_start
                         print(f"    → Download PDF: {pdf_elapsed:.1f}s")
                         
+                        # Contar apenas novos downloads (não existentes)
                         if xml_downloaded or pdf_downloaded:
                             total_downloaded += 1
+                            if xml_downloaded and not pdf_downloaded:
+                                novas_baixadas += 1  # Só XML novo
+                            elif not xml_downloaded and pdf_downloaded:
+                                novas_baixadas += 1  # Só PDF novo
+                            elif xml_downloaded and pdf_downloaded:
+                                novas_baixadas += 1  # Ambos novos
                         
                         # Aguardar antes da próxima nota
                         time.sleep(0.5)
@@ -1169,21 +1269,22 @@ class NFSePlaywrightAgent:
             print("  AGENTE NFSe - Download Automático de Notas")
             print("="*70)
             
+            # SEMPRE extrair informações e configurar Chrome (é específico de cada certificado)
+            # 1. Extrair informações do certificado
+            cert_info = self._get_certificate_info()
+            
+            # 2. Configurar política do Chrome no Registry
+            print("\n→ Configurando auto-seleção de certificado...")
+            self._configure_chrome_registry_policy(cert_info)
+            
+            # 3. Instalar certificado no Windows (apenas se não foi instalado externamente)
             if not certificado_ja_instalado:
-                # 1. Extrair informações do certificado
-                cert_info = self._get_certificate_info()
-                
-                # 2. Configurar política do Chrome no Registry
-                print("\n→ Configurando auto-seleção de certificado...")
-                self._configure_chrome_registry_policy(cert_info)
-                
-                # 3. Instalar certificado no Windows
                 self._install_certificate_windows()
             else:
-                print("\n→ Usando certificado já instalado...")
+                print("→ Certificado já instalado no Windows Store")
             
-            # 4. Configurar e iniciar navegador
-            context, page, playwright = self._setup_browser()
+            # 4. Configurar e iniciar navegador (passando cert_info já extraído)
+            context, page, playwright = self._setup_browser(cert_info)
             
             # 5. Login com certificado
             if not self.login_com_certificado(page):
@@ -1234,6 +1335,8 @@ def processar_multiplos_certificados(certificados: List[str], senha: str, downlo
     print(f"  PROCESSAMENTO DE {total_certificados} CERTIFICADO(S)")
     print("="*70)
     
+    certificado_anterior = None
+    
     for idx, cert_path in enumerate(certificados, 1):
         cert_path = cert_path.strip()
         if not cert_path:
@@ -1245,13 +1348,23 @@ def processar_multiplos_certificados(certificados: List[str], senha: str, downlo
         
         try:
             # PASSO 1: Desinstalar certificado anterior (se houver)
-            if idx > 1:
-                print("\n→ Removendo certificado anterior...")
-                agent_temp = NFSePlaywrightAgent(certificados[idx-2], senha, download_dir)
+            if certificado_anterior:
+                print(f"\n→ Removendo certificado anterior ({Path(certificado_anterior).name})...")
+                agent_temp = NFSePlaywrightAgent(certificado_anterior, senha, download_dir)
+                info_anterior = agent_temp._get_certificate_info()
+                if info_anterior:
+                    print(f"   Removendo: {info_anterior.get('Subject', 'Desconhecido')}")
                 agent_temp._uninstall_certificate_windows()
+                time.sleep(2)  # Aguardar desinstalação
             
             # PASSO 2: Criar agente para este certificado
+            print(f"\n→ Criando agente para: {Path(cert_path).name}")
             agent = NFSePlaywrightAgent(cert_path, senha, download_dir)
+            
+            # Verificar informações do novo certificado
+            info_novo = agent._get_certificate_info()
+            if info_novo:
+                print(f"   Novo certificado: {info_novo.get('Subject', 'Desconhecido')}")
             
             # PASSO 3: Instalar certificado
             print(f"\n→ Instalando certificado {idx}/{total_certificados}...")
@@ -1262,11 +1375,14 @@ def processar_multiplos_certificados(certificados: List[str], senha: str, downlo
             # PASSO 4: Executar download (sem instalar novamente, pois já instalamos)
             agent.executar(dias_retroativos=dias_retroativos, certificado_ja_instalado=True)
             
+            # Guardar para desinstalar na próxima iteração
+            certificado_anterior = cert_path
+            
             # PASSO 5: Aguardar antes do próximo certificado
             if idx < total_certificados:
                 print(f"\n✓ Certificado {idx}/{total_certificados} processado!")
-                print("→ Aguardando 10 segundos para fechar navegador...")
-                time.sleep(10)
+                print("→ Aguardando 5 segundos para fechar navegador...")
+                time.sleep(5)
             else:
                 print(f"\n✓ Último certificado processado!")
                 # Remover último certificado
@@ -1323,7 +1439,5 @@ def main():
         traceback.print_exc()
 
 
-if __name__ == "__main__":
-    main()
 if __name__ == "__main__":
     main()
