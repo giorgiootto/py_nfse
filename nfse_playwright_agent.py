@@ -11,9 +11,13 @@ import winreg
 import threading
 import requests  # Para download direto via HTTP
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, List
 from playwright.sync_api import sync_playwright, Page, Browser, BrowserContext
+from dotenv import load_dotenv
+
+# Carregar variáveis de ambiente
+load_dotenv()
 
 try:
     import pyautogui
@@ -586,12 +590,13 @@ class NFSePlaywrightAgent:
             print(f"✗ Erro durante login: {e}")
             return False
     
-    def navegar_notas_recebidas(self, page: Page) -> bool:
+    def navegar_notas_recebidas(self, page: Page, dias_retroativos: int = 10) -> bool:
         """
         Navega até a seção de Notas Recebidas e aplica filtro de data
         
         Args:
             page: Página do Playwright
+            dias_retroativos: Quantidade de dias para trás (padrão: 10)
             
         Returns:
             True se navegação bem-sucedida
@@ -605,20 +610,16 @@ class NFSePlaywrightAgent:
             
             time.sleep(3)  # Aguardar renderização completa
             
-            # Calcular datas (hoje - 10 dias até hoje)
-            from datetime import datetime, timedelta
+            # Calcular datas
             data_final = datetime.now()
-            data_inicial = data_final - timedelta(days=10)
+            data_inicial = data_final - timedelta(days=dias_retroativos)
             
-            # Formatar datas (tentar vários formatos)
+            # Formatar datas
             formato_br = data_inicial.strftime("%d/%m/%Y")
-            formato_iso = data_inicial.strftime("%Y-%m-%d")
-            
             formato_br_final = data_final.strftime("%d/%m/%Y")
-            formato_iso_final = data_final.strftime("%Y-%m-%d")
             
             print(f"\n→ Aplicando filtro de data:")
-            print(f"   Data inicial: {formato_br} (últimos 10 dias)")
+            print(f"   Data inicial: {formato_br} (últimos {dias_retroativos} dias)")
             print(f"   Data final: {formato_br_final} (hoje)")
             
             # Usar os seletores exatos fornecidos
@@ -1151,12 +1152,14 @@ class NFSePlaywrightAgent:
             print(f"    ⚠️  Erro ao baixar {file_type}: {e}")
             return False
     
-    def executar(self, quantidade: int = 999999):
+    def executar(self, quantidade: int = 999999, dias_retroativos: int = 10, certificado_ja_instalado: bool = False):
         """
         Executa o processo completo
         
         Args:
             quantidade: Quantidade máxima de notas (padrão: todas)
+            dias_retroativos: Dias para trás no filtro de data
+            certificado_ja_instalado: Se True, pula instalação (certificado já foi instalado)
         """
         context = None
         playwright = None
@@ -1166,15 +1169,18 @@ class NFSePlaywrightAgent:
             print("  AGENTE NFSe - Download Automático de Notas")
             print("="*70)
             
-            # 1. Extrair informações do certificado
-            cert_info = self._get_certificate_info()
-            
-            # 2. Configurar política do Chrome no Registry
-            print("\n→ Configurando auto-seleção de certificado...")
-            self._configure_chrome_registry_policy(cert_info)
-            
-            # 3. Instalar certificado no Windows
-            self._install_certificate_windows()
+            if not certificado_ja_instalado:
+                # 1. Extrair informações do certificado
+                cert_info = self._get_certificate_info()
+                
+                # 2. Configurar política do Chrome no Registry
+                print("\n→ Configurando auto-seleção de certificado...")
+                self._configure_chrome_registry_policy(cert_info)
+                
+                # 3. Instalar certificado no Windows
+                self._install_certificate_windows()
+            else:
+                print("\n→ Usando certificado já instalado...")
             
             # 4. Configurar e iniciar navegador
             context, page, playwright = self._setup_browser()
@@ -1185,7 +1191,7 @@ class NFSePlaywrightAgent:
                 return
             
             # 6. Navegar para notas recebidas
-            if not self.navegar_notas_recebidas(page):
+            if not self.navegar_notas_recebidas(page, dias_retroativos):
                 print("\n✗ Falha na navegação. Encerrando...")
                 return
             
@@ -1212,29 +1218,112 @@ class NFSePlaywrightAgent:
                 playwright.stop()
 
 
+def processar_multiplos_certificados(certificados: List[str], senha: str, download_dir: str, dias_retroativos: int):
+    """
+    Processa múltiplos certificados em sequência
+    
+    Args:
+        certificados: Lista de caminhos para arquivos .pfx
+        senha: Senha dos certificados
+        download_dir: Diretório de downloads
+        dias_retroativos: Dias para trás no filtro
+    """
+    total_certificados = len(certificados)
+    
+    print("="*70)
+    print(f"  PROCESSAMENTO DE {total_certificados} CERTIFICADO(S)")
+    print("="*70)
+    
+    for idx, cert_path in enumerate(certificados, 1):
+        cert_path = cert_path.strip()
+        if not cert_path:
+            continue
+            
+        print(f"\n{'='*70}")
+        print(f"  CERTIFICADO {idx}/{total_certificados}: {Path(cert_path).name}")
+        print(f"{'='*70}")
+        
+        try:
+            # PASSO 1: Desinstalar certificado anterior (se houver)
+            if idx > 1:
+                print("\n→ Removendo certificado anterior...")
+                agent_temp = NFSePlaywrightAgent(certificados[idx-2], senha, download_dir)
+                agent_temp._uninstall_certificate_windows()
+            
+            # PASSO 2: Criar agente para este certificado
+            agent = NFSePlaywrightAgent(cert_path, senha, download_dir)
+            
+            # PASSO 3: Instalar certificado
+            print(f"\n→ Instalando certificado {idx}/{total_certificados}...")
+            if not agent._install_certificate_windows():
+                print(f"✗ Falha ao instalar certificado - PULANDO")
+                continue
+            
+            # PASSO 4: Executar download (sem instalar novamente, pois já instalamos)
+            agent.executar(dias_retroativos=dias_retroativos, certificado_ja_instalado=True)
+            
+            # PASSO 5: Aguardar antes do próximo certificado
+            if idx < total_certificados:
+                print(f"\n✓ Certificado {idx}/{total_certificados} processado!")
+                print("→ Aguardando 10 segundos para fechar navegador...")
+                time.sleep(10)
+            else:
+                print(f"\n✓ Último certificado processado!")
+                # Remover último certificado
+                agent._uninstall_certificate_windows()
+                
+        except Exception as e:
+            print(f"\n✗ Erro ao processar certificado {cert_path}: {e}")
+            import traceback
+            traceback.print_exc()
+            # Tentar remover certificado mesmo com erro
+            try:
+                agent._uninstall_certificate_windows()
+            except:
+                pass
+            continue
+    
+    print("\n" + "="*70)
+    print(f"✓ TODOS OS {total_certificados} CERTIFICADOS FORAM PROCESSADOS")
+    print("="*70)
+
+
 def main():
     """Função principal"""
+    # Carregar configurações do .env
+    dias_retroativos = int(os.getenv("DIAS_RETROATIVOS", "10"))
+    certificados_str = os.getenv("CERTIFICADOS", "certificados/condor_2026.pfx")
+    senha = os.getenv("SENHA_CERTIFICADO", "condor")
+    download_dir = os.getenv("DIRETORIO_DOWNLOADS", "./downloads_nfse")
+    
+    # Converter string de certificados em lista
+    certificados = [c.strip() for c in certificados_str.split(',') if c.strip()]
+    
     print("\n" + "="*70)
-    print("  AGENTE NFSe - DOWNLOAD AUTOMÁTICO")
-    print("="*70 + "\n")
-    
-    # Configuração padrão - sem perguntas
-    PFX_PATH = "certificados/condor_2026.pfx"
-    PFX_PASSWORD = "condor"
-    DOWNLOAD_DIR = "./downloads_nfse"
-    
-    print(f"✓ Certificado: {PFX_PATH}")
-    print(f"✓ Diretório de download: {DOWNLOAD_DIR}")
-    print(f"✓ Modo: TODAS as notas disponíveis\n")
+    print("  CONFIGURAÇÃO")
+    print("="*70)
+    print(f"  Dias retroativos: {dias_retroativos}")
+    print(f"  Certificados: {len(certificados)}")
+    for idx, cert in enumerate(certificados, 1):
+        print(f"    {idx}. {cert}")
+    print(f"  Diretório downloads: {download_dir}")
+    print("="*70)
     
     try:
-        agent = NFSePlaywrightAgent(PFX_PATH, PFX_PASSWORD, DOWNLOAD_DIR)
-        agent.executar()  # Sem limite de quantidade
+        if len(certificados) == 1:
+            # Processar um único certificado
+            agent = NFSePlaywrightAgent(certificados[0], senha, download_dir)
+            agent.executar(dias_retroativos=dias_retroativos)
+        else:
+            # Processar múltiplos certificados
+            processar_multiplos_certificados(certificados, senha, download_dir, dias_retroativos)
     except Exception as e:
         print(f"\n✗ Erro: {e}")
         import traceback
         traceback.print_exc()
 
 
+if __name__ == "__main__":
+    main()
 if __name__ == "__main__":
     main()
