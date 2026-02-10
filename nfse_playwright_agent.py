@@ -12,9 +12,13 @@ import winreg
 import threading
 import requests  # Para download direto via HTTP
 import socket  # Para pegar nome da máquina
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict
+from dataclasses import dataclass, field
 from playwright.sync_api import sync_playwright, Page, Browser, BrowserContext
 from dotenv import load_dotenv
 
@@ -46,6 +50,19 @@ except ImportError:
     print("⚠️  PyWinAuto não disponível. Instale com: pip install pywinauto")
 
 
+@dataclass
+class ResultadoProcessamento:
+    """Armazena resultados do processamento de um usuário"""
+    codloja: int
+    usuario: str
+    login_sucesso: bool
+    notas_encontradas: int = 0
+    notas_baixadas: int = 0
+    notas_gravadas_oracle: int = 0
+    erro_mensagem: str = ""
+    tempo_processamento: float = 0.0
+
+
 class NFSePlaywrightAgent:
     """Agente para automação de download de NFSe com login por usuário e senha"""
     
@@ -66,6 +83,11 @@ class NFSePlaywrightAgent:
         self.codloja = codloja
         self.download_dir = Path(download_dir)
         self.download_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Estatísticas do processamento
+        self.notas_encontradas = 0
+        self.notas_baixadas = 0
+        self.notas_gravadas_oracle = 0
         
         # Configurações Oracle
         self.oracle_enabled = ORACLE_AVAILABLE and os.getenv("ORACLE_USER")
@@ -359,6 +381,7 @@ class NFSePlaywrightAgent:
             
             print(f"    ✓ Gravado no Oracle: {chave}")
             self._log_oracle('INFO', 'AGENT', f'NFSe gravada com sucesso', chave)
+            self.notas_gravadas_oracle += 1  # Incrementar contador
             return True
             
         except Exception as e:
@@ -923,6 +946,7 @@ class NFSePlaywrightAgent:
                     break
                 
                 print(f"✓ Encontradas {len(rows)} notas nesta página")
+                self.notas_encontradas += len(rows)  # Incrementar contador de notas encontradas
                 
                 # Coletar números das notas desta página para detectar loop
                 notas_pagina_atual = set()
@@ -1029,6 +1053,7 @@ class NFSePlaywrightAgent:
                         # Contar apenas novos downloads (não existentes)
                         if xml_downloaded or pdf_downloaded:
                             total_downloaded += 1
+                            self.notas_baixadas += 1  # Incrementar contador total
                             if xml_downloaded and not pdf_downloaded:
                                 novas_baixadas += 1  # Só XML novo
                             elif not xml_downloaded and pdf_downloaded:
@@ -1361,16 +1386,22 @@ class NFSePlaywrightAgent:
             print(f"    ⚠️  Erro ao baixar {file_type}: {e}")
             return False
     
-    def executar(self, quantidade: int = 999999, dias_retroativos: int = 10):
+    def executar(self, quantidade: int = 999999, dias_retroativos: int = 10) -> ResultadoProcessamento:
         """
         Executa o processo completo
         
         Args:
             quantidade: Quantidade máxima de notas (padrão: todas)
             dias_retroativos: Dias para trás no filtro de data
+            
+        Returns:
+            ResultadoProcessamento com estatísticas do processamento
         """
         context = None
         playwright = None
+        tempo_inicio = time.time()
+        login_sucesso = False
+        erro_mensagem = ""
         
         try:
             print("="*70)
@@ -1384,12 +1415,28 @@ class NFSePlaywrightAgent:
             # 2. Login com usuário e senha
             if not self.login_com_usuario_senha(page):
                 print("\n✗ Falha no login. Encerrando...")
-                return
+                erro_mensagem = "Falha no login - credenciais inválidas ou erro de conexão"
+                return ResultadoProcessamento(
+                    codloja=self.codloja,
+                    usuario=self.usuario,
+                    login_sucesso=False,
+                    erro_mensagem=erro_mensagem,
+                    tempo_processamento=time.time() - tempo_inicio
+                )
+            
+            login_sucesso = True
             
             # 3. Navegar para notas recebidas
             if not self.navegar_notas_recebidas(page, dias_retroativos):
                 print("\n✗ Falha na navegação. Encerrando...")
-                return
+                erro_mensagem = "Falha ao navegar para notas recebidas"
+                return ResultadoProcessamento(
+                    codloja=self.codloja,
+                    usuario=self.usuario,
+                    login_sucesso=True,
+                    erro_mensagem=erro_mensagem,
+                    tempo_processamento=time.time() - tempo_inicio
+                )
             
             # 4. Baixar notas
             downloaded = self.baixar_ultimas_notas(page, quantidade)
@@ -1402,10 +1449,34 @@ class NFSePlaywrightAgent:
             
             time.sleep(3)  # Aguardar 3 segundos antes de fechar
             
+            # Retornar resultado com sucesso
+            return ResultadoProcessamento(
+                codloja=self.codloja,
+                usuario=self.usuario,
+                login_sucesso=True,
+                notas_encontradas=self.notas_encontradas,
+                notas_baixadas=self.notas_baixadas,
+                notas_gravadas_oracle=self.notas_gravadas_oracle,
+                tempo_processamento=time.time() - tempo_inicio
+            )
+            
         except Exception as e:
             print(f"\n✗ Erro durante execução: {e}")
             import traceback
             traceback.print_exc()
+            erro_mensagem = f"Erro durante execução: {str(e)}"
+            
+            # Retornar resultado com erro
+            return ResultadoProcessamento(
+                codloja=self.codloja,
+                usuario=self.usuario,
+                login_sucesso=login_sucesso,
+                notas_encontradas=self.notas_encontradas,
+                notas_baixadas=self.notas_baixadas,
+                notas_gravadas_oracle=self.notas_gravadas_oracle,
+                erro_mensagem=erro_mensagem,
+                tempo_processamento=time.time() - tempo_inicio
+            )
             
         finally:
             if context:
@@ -1421,7 +1492,7 @@ class NFSePlaywrightAgent:
                     pass
 
 
-def processar_multiplos_usuarios(usuarios: List[dict], download_dir: str, dias_retroativos: int):
+def processar_multiplos_usuarios(usuarios: List[dict], download_dir: str, dias_retroativos: int) -> List[ResultadoProcessamento]:
     """
     Processa múltiplos usuários em sequência
     
@@ -1429,8 +1500,12 @@ def processar_multiplos_usuarios(usuarios: List[dict], download_dir: str, dias_r
         usuarios: Lista de dicionários com codloja, usuario, senha
         download_dir: Diretório de downloads
         dias_retroativos: Dias para trás no filtro
+        
+    Returns:
+        Lista de ResultadoProcessamento
     """
     total_usuarios = len(usuarios)
+    resultados = []
     
     print("\n" + "="*70)
     print(f"  PROCESSANDO {total_usuarios} USUÁRIOS")
@@ -1452,8 +1527,9 @@ def processar_multiplos_usuarios(usuarios: List[dict], download_dir: str, dias_r
             print(f"\n→ Criando agente para loja {codloja}...")
             agent = NFSePlaywrightAgent(usuario, senha, codloja, download_dir)
             
-            # Executar download
-            agent.executar(dias_retroativos=dias_retroativos)
+            # Executar download e coletar resultado
+            resultado = agent.executar(dias_retroativos=dias_retroativos)
+            resultados.append(resultado)
             
             # Aguardar antes do próximo usuário
             if idx < total_usuarios:
@@ -1467,11 +1543,20 @@ def processar_multiplos_usuarios(usuarios: List[dict], download_dir: str, dias_r
             print(f"\n✗ Erro ao processar usuário da loja {codloja}: {e}")
             import traceback
             traceback.print_exc()
+            # Adicionar resultado com erro
+            resultados.append(ResultadoProcessamento(
+                codloja=codloja,
+                usuario=usuario,
+                login_sucesso=False,
+                erro_mensagem=f"Erro ao processar: {str(e)}"
+            ))
             continue
     
     print("\n" + "="*70)
     print(f"✓ TODOS OS {total_usuarios} USUÁRIOS FORAM PROCESSADOS")
     print("="*70)
+    
+    return resultados
 
 
 def buscar_usuarios_oracle() -> List[dict]:
@@ -1538,6 +1623,188 @@ def buscar_usuarios_oracle() -> List[dict]:
         return []
 
 
+def enviar_email_resumo(resultados: List[ResultadoProcessamento]):
+    """
+    Envia e-mail com resumo do processamento
+    
+    Args:
+        resultados: Lista de ResultadoProcessamento
+    """
+    try:
+        # Configurações de e-mail do .env
+        smtp_server = os.getenv("SMTP_SERVER")
+        smtp_port = int(os.getenv("SMTP_PORT", "587"))
+        smtp_user = os.getenv("SMTP_USER")
+        smtp_password = os.getenv("SMTP_PASSWORD")
+        email_from = os.getenv("EMAIL_FROM")
+        email_to = os.getenv("EMAIL_TO", "")
+        
+        if not all([smtp_server, smtp_user, smtp_password, email_from, email_to]):
+            print("⚠️  Configurações de e-mail incompletas no .env - e-mail não será enviado")
+            return
+        
+        # Separar destinatários
+        destinatarios = [email.strip() for email in email_to.split(';') if email.strip()]
+        
+        if not destinatarios:
+            print("⚠️  Nenhum destinatário configurado - e-mail não será enviado")
+            return
+        
+        print("\n→ Preparando e-mail de resumo...")
+        
+        # Calcular estatísticas totais
+        total_usuarios = len(resultados)
+        usuarios_sucesso = sum(1 for r in resultados if r.login_sucesso)
+        usuarios_falha = total_usuarios - usuarios_sucesso
+        total_notas_encontradas = sum(r.notas_encontradas for r in resultados)
+        total_notas_baixadas = sum(r.notas_baixadas for r in resultados)
+        total_notas_gravadas = sum(r.notas_gravadas_oracle for r in resultados)
+        
+        # Criar corpo do e-mail HTML
+        data_execucao = datetime.now().strftime("%d/%m/%Y às %H:%M:%S")
+        
+        html = f"""
+        <html>
+        <head>
+            <style>
+                body {{ font-family: Arial, sans-serif; }}
+                h2 {{ color: #2c3e50; }}
+                table {{ border-collapse: collapse; width: 100%; margin-top: 20px; }}
+                th {{ background-color: #3498db; color: white; padding: 12px; text-align: left; }}
+                td {{ padding: 10px; border-bottom: 1px solid #ddd; }}
+                tr:hover {{ background-color: #f5f5f5; }}
+                .sucesso {{ color: #27ae60; font-weight: bold; }}
+                .erro {{ color: #e74c3c; font-weight: bold; }}
+                .resumo {{ background-color: #ecf0f1; padding: 15px; border-radius: 5px; margin-bottom: 20px; }}
+                .resumo-item {{ margin: 10px 0; }}
+            </style>
+        </head>
+        <body>
+            <h2>📊 Resumo de Processamento - NFSe</h2>
+            <p><strong>Data/Hora:</strong> {data_execucao}</p>
+            
+            <div class="resumo">
+                <h3>📈 Estatísticas Gerais</h3>
+                <div class="resumo-item">✅ <strong>Usuários processados:</strong> {total_usuarios}</div>
+                <div class="resumo-item">✅ <strong>Login com sucesso:</strong> {usuarios_sucesso}</div>
+                <div class="resumo-item">❌ <strong>Login com falha:</strong> {usuarios_falha}</div>
+                <div class="resumo-item">📄 <strong>Total de notas encontradas:</strong> {total_notas_encontradas}</div>
+                <div class="resumo-item">⬇️ <strong>Total de notas baixadas:</strong> {total_notas_baixadas}</div>
+                <div class="resumo-item">💾 <strong>Total gravado no Oracle:</strong> {total_notas_gravadas}</div>
+            </div>
+            
+            <h3>📋 Detalhamento por Usuário</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Loja</th>
+                        <th>CPF/CNPJ</th>
+                        <th>Login</th>
+                        <th>Notas Encontradas</th>
+                        <th>Notas Baixadas</th>
+                        <th>Gravadas Oracle</th>
+                        <th>Tempo (s)</th>
+                        <th>Observações</th>
+                    </tr>
+                </thead>
+                <tbody>
+        """
+        
+        # Adicionar linhas para cada usuário
+        for resultado in resultados:
+            status_login = '<span class="sucesso">✓ Sucesso</span>' if resultado.login_sucesso else '<span class="erro">✗ Falha</span>'
+            observacao = resultado.erro_mensagem if resultado.erro_mensagem else "OK"
+            tempo_formatado = f"{resultado.tempo_processamento:.1f}"
+            
+            html += f"""
+                    <tr>
+                        <td>{resultado.codloja}</td>
+                        <td>{resultado.usuario}</td>
+                        <td>{status_login}</td>
+                        <td>{resultado.notas_encontradas}</td>
+                        <td>{resultado.notas_baixadas}</td>
+                        <td>{resultado.notas_gravadas_oracle}</td>
+                        <td>{tempo_formatado}</td>
+                        <td>{observacao}</td>
+                    </tr>
+            """
+        
+        html += """
+                </tbody>
+            </table>
+            
+            <br>
+            <p style="color: #7f8c8d; font-size: 12px;">
+                Este é um e-mail automático gerado pelo sistema de download de NFSe.<br>
+                Em caso de dúvidas, entre em contato com o suporte.
+            </p>
+        </body>
+        </html>
+        """
+        
+        # Criar mensagem
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = f"[NFSe] Resumo de Processamento - {total_usuarios} usuários processados"
+        msg['From'] = email_from
+        msg['To'] = ', '.join(destinatarios)
+        
+        # Anexar HTML
+        parte_html = MIMEText(html, 'html', 'utf-8')
+        msg.attach(parte_html)
+        
+        # Enviar e-mail
+        print(f"→ Enviando e-mail para: {', '.join(destinatarios)}")
+        print(f"   SMTP: {smtp_server}:{smtp_port}")
+        print(f"   User: {smtp_user}")
+        print(f"   From: {email_from}")
+        
+        try:
+            with smtplib.SMTP(smtp_server, smtp_port, timeout=30) as server:
+                # Habilitar debug para diagnóstico (apenas em caso de erro)
+                # server.set_debuglevel(1)
+                
+                # TLS apenas se porta 587
+                if smtp_port == 587:
+                    try:
+                        server.starttls()
+                        print("   ✓ Conexão TLS estabelecida")
+                    except:
+                        print("   ⚠️  TLS não suportado, continuando sem criptografia")
+                
+                # Tentar autenticação se usuário/senha fornecidos
+                if smtp_user and smtp_password:
+                    try:
+                        server.login(smtp_user, smtp_password)
+                        print(f"   ✓ Autenticação realizada como: {smtp_user}")
+                    except smtplib.SMTPAuthenticationError as auth_error:
+                        print(f"   ✗ Erro de autenticação: {auth_error}")
+                        # Tentar sem @dominio
+                        if '@' in smtp_user:
+                            username_only = smtp_user.split('@')[0]
+                            print(f"   → Tentando com username apenas: {username_only}")
+                            server.login(username_only, smtp_password)
+                            print(f"   ✓ Autenticação realizada como: {username_only}")
+                        else:
+                            raise
+                    except Exception as e:
+                        print(f"   ⚠️  Falha na autenticação ({e}), tentando enviar sem autenticação")
+                
+                # Enviar e-mail
+                server.send_message(msg)
+                print("✓ E-mail enviado com sucesso!")
+                
+        except smtplib.SMTPRecipientsRefused as recip_error:
+            print(f"✗ Destinatários recusados pelo servidor: {recip_error}")
+            print(f"   Isso pode indicar que o endereço remetente '{email_from}' não é válido para o usuário '{smtp_user}'")
+            raise
+        except Exception as smtp_error:
+            print(f"✗ Erro ao enviar via SMTP: {smtp_error}")
+            raise
+        
+    except Exception as e:
+        print(f"✗ Erro ao enviar e-mail: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 def main():
@@ -1577,10 +1844,16 @@ def main():
                 usuario_data['codloja'],
                 download_dir
             )
-            agent.executar(dias_retroativos=dias_retroativos)
+            resultado = agent.executar(dias_retroativos=dias_retroativos)
+            resultados = [resultado]
         else:
             # Processar múltiplos usuários
-            processar_multiplos_usuarios(usuarios_oracle, download_dir, dias_retroativos)
+            resultados = processar_multiplos_usuarios(usuarios_oracle, download_dir, dias_retroativos)
+        
+        # Enviar e-mail com resumo
+        if resultados:
+            enviar_email_resumo(resultados)
+        
     except Exception as e:
         print(f"\n✗ Erro: {e}")
         import traceback
