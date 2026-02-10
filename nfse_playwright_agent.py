@@ -1,6 +1,7 @@
 """
-Agente NFSe com Playwright para seleção automática de certificado digital
+Agente NFSe com Playwright para download automático de notas fiscais
 Acessa o portal https://www.nfse.gov.br/EmissorNacional/Login
+Utiliza login via usuário e senha configurados na tabela CONF_MUNIC_NFSE do Oracle
 """
 
 import os
@@ -46,26 +47,25 @@ except ImportError:
 
 
 class NFSePlaywrightAgent:
-    """Agente para automação de download de NFSe com seleção automática de certificado"""
+    """Agente para automação de download de NFSe com login por usuário e senha"""
     
     PORTAL_URL = "https://www.nfse.gov.br/EmissorNacional/Login"
     
-    def __init__(self, pfx_path: str, pfx_password: str, download_dir: str = "./downloads"):
+    def __init__(self, usuario: str, senha: str, codloja: int, download_dir: str = "./downloads"):
         """
         Inicializa o agente
         
         Args:
-            pfx_path: Caminho do arquivo .pfx
-            pfx_password: Senha do certificado
+            usuario: CPF/CNPJ do usuário
+            senha: Senha de acesso
+            codloja: Código da loja
             download_dir: Diretório para downloads
         """
-        self.pfx_path = Path(pfx_path)
-        self.pfx_password = pfx_password
+        self.usuario = usuario
+        self.senha = senha
+        self.codloja = codloja
         self.download_dir = Path(download_dir)
         self.download_dir.mkdir(parents=True, exist_ok=True)
-        
-        if not self.pfx_path.exists():
-            raise FileNotFoundError(f"Certificado não encontrado: {pfx_path}")
         
         # Configurações Oracle
         self.oracle_enabled = ORACLE_AVAILABLE and os.getenv("ORACLE_USER")
@@ -637,13 +637,10 @@ class NFSePlaywrightAgent:
             print(f"✗ Erro ao configurar auto-seleção: {e}")
             return None
     
-    def _setup_browser(self, cert_info: Dict[str, str] = None):
+    def _setup_browser(self):
         """
-        Configura o navegador Chromium com suporte a certificado
+        Configura o navegador Chromium
         
-        Args:
-            cert_info: Dicionário com informações do certificado (opcional, se None extrai novamente)
-            
         Returns:
             Tupla (context, page, playwright)
         """
@@ -651,60 +648,37 @@ class NFSePlaywrightAgent:
         
         playwright = sync_playwright().start()
         
-        # Extrair informações do certificado (se não fornecido)
-        if cert_info is None:
-            cert_info = self._get_certificate_info()
-        
-        # Configurar perfil com auto-seleção
-        profile_dir = self._configure_chrome_auto_select(cert_info)
-        
-        # Argumentos do Chrome para aceitar certificados
+        # Argumentos do Chrome
         browser_args = [
             "--ignore-certificate-errors",
             "--disable-web-security",
             "--allow-insecure-localhost",
             "--disable-blink-features=AutomationControlled",
-            "--use-system-default-printer",  # Usar configurações do sistema
-            "--enable-features=WebUIDarkMode",  # Recursos extras
-            "--disable-features=IsolateOrigins,site-per-process",  # Facilitar acesso
+            "--use-system-default-printer",
+            "--enable-features=WebUIDarkMode",
+            "--disable-features=IsolateOrigins,site-per-process",
         ]
         
-        # Adicionar flag para aceitar automaticamente certificados de cliente
-        # Esta é a chave para auto-seleção!
-        browser_args.append("--auto-select-desktop-capture-source=Entire screen")
+        # Lançar navegador
+        browser = playwright.chromium.launch(
+            headless=False,
+            args=browser_args,
+            slow_mo=500
+        )
         
-        print("   Configurando Chrome para auto-seleção de certificado...")
+        context = browser.new_context(
+            accept_downloads=True,
+            viewport={"width": 1920, "height": 1080}
+        )
         
-        # Usar launch_persistent_context quando precisar de user_data_dir
-        if profile_dir:
-            context = playwright.chromium.launch_persistent_context(
-                user_data_dir=profile_dir,
-                headless=False,
-                args=browser_args,
-                slow_mo=500,
-                accept_downloads=True,
-                viewport={"width": 1920, "height": 1080}
-            )
-        else:
-            # Fallback para launch normal
-            browser = playwright.chromium.launch(
-                headless=False,
-                args=browser_args,
-                slow_mo=500
-            )
-            context = browser.new_context(
-                accept_downloads=True,
-                viewport={"width": 1920, "height": 1080}
-            )
-        
-        page = context.pages[0] if context.pages else context.new_page()
+        page = context.new_page()
         
         print("✓ Navegador iniciado")
         return context, page, playwright
     
-    def login_com_certificado(self, page: Page) -> bool:
+    def login_com_usuario_senha(self, page: Page) -> bool:
         """
-        Realiza login com certificado digital
+        Realiza login com usuário e senha
         
         Args:
             page: Página do Playwright
@@ -715,92 +689,50 @@ class NFSePlaywrightAgent:
         try:
             print("\n→ Acessando portal NFSe...")
             page.goto(self.PORTAL_URL, wait_until="networkidle")
-            time.sleep(5)  # Aguardar renderização completa (aumentado de 3 para 5s)
+            time.sleep(3)
             
-            # Debug: verificar URL e título da página
             print(f"   URL atual: {page.url}")
             print(f"   Título: {page.title()}")
             
-            print("\n→ Procurando botão 'Acesso via certificado digital'...")
+            print(f"\n→ Fazendo login com usuário {self.usuario}...")
             
-            # Tentar diferentes seletores com múltiplas tentativas
-            selectors = [
-                'a.img-certificado',
-                'a[href="/EmissorNacional/Certificado"]',
-                'a[href*="Certificado"]',
-                'text=Acesso via certificado digital',
-                'a:has-text("certificado")',
-                'button:has-text("certificado")',
-                'a[title*="certificado"]',
-                '.certificado',
-                '#certificado',
-                'div:has-text("certificado") a',
-                'img[alt*="certificado"]',
-                'a:has(img[alt*="certificado"])'
-            ]
+            # Preencher campo de usuário (CPF/CNPJ)
+            try:
+                print("   → Preenchendo campo de usuário/CPF/CNPJ...")
+                campo_usuario = page.locator('#Inscricao')
+                campo_usuario.wait_for(state='visible', timeout=10000)
+                campo_usuario.fill(self.usuario)
+                print(f"   ✓ Usuário preenchido: {self.usuario}")
+            except Exception as e:
+                print(f"   ✗ Erro ao preencher usuário: {e}")
+                return False
             
-            clicked = False
+            # Preencher campo de senha
+            try:
+                print("   → Preenchendo campo de senha...")
+                campo_senha = page.locator('#Senha')
+                campo_senha.wait_for(state='visible', timeout=10000)
+                campo_senha.fill(self.senha)
+                print("   ✓ Senha preenchida")
+            except Exception as e:
+                print(f"   ✗ Erro ao preencher senha: {e}")
+                return False
             
-            # Fazer 5 tentativas (aumentado de 3 para 5)
-            for tentativa in range(5):
-                if clicked:
-                    break
-                    
-                print(f"   Tentativa {tentativa + 1}/5...")
-                
-                # Debug: listar todos os links visíveis
-                if tentativa == 0:
-                    try:
-                        links = page.locator('a').all()
-                        print(f"   DEBUG: Encontrados {len(links)} links na página")
-                        # Mostrar primeiros 10 links
-                        for i, link in enumerate(links[:10]):
-                            try:
-                                texto = link.inner_text(timeout=1000)
-                                href = link.get_attribute('href')
-                                if texto or href:
-                                    print(f"      Link {i+1}: '{texto[:50] if texto else '(sem texto)'}' -> {href}")
-                            except:
-                                pass
-                    except:
-                        pass
-                
-                for selector in selectors:
-                    try:
-                        locator = page.locator(selector)
-                        count = locator.count()
-                        if count > 0:
-                            print(f"   ✓ Encontrado {count} elemento(s) com: {selector}")
-                            try:
-                                locator.first.scroll_into_view_if_needed(timeout=5000)
-                                time.sleep(0.5)
-                                locator.first.click(timeout=10000, force=True)
-                                print("   ✓ Botão clicado com sucesso!")
-                                clicked = True
-                                time.sleep(4)  # Aguardar popup do certificado
-                                break
-                            except Exception as click_error:
-                                print(f"      ✗ Erro ao clicar: {click_error}")
-                                continue
-                    except Exception as e:
-                        continue
-                
-                if not clicked and tentativa < 4:
-                    time.sleep(3)  # Aguardar 3s antes de nova tentativa
-            
-            if not clicked:
-                print("\n⚠️  Botão não encontrado automaticamente após 5 tentativas")
-                print("   Por favor, clique manualmente em 'Acesso via certificado digital'")
-                print("   Pressione ENTER após clicar...")
-                input("   > ")
-            
-            # Aguardar seleção de certificado
-            print("\n→ Aguardando seleção de certificado...")
-            print("   Por favor, selecione o certificado e clique em OK")
-            print("   (Aguardando até 60 segundos...)")
+            # Clicar no botão Entrar
+            try:
+                print("   → Clicando no botão 'Entrar'...")
+                botao_entrar = page.locator('button[type="submit"].btn.btn-lg.btn-primary')
+                botao_entrar.wait_for(state='visible', timeout=10000)
+                time.sleep(1)
+                botao_entrar.click()
+                print("   ✓ Botão 'Entrar' clicado")
+            except Exception as e:
+                print(f"   ✗ Erro ao clicar no botão Entrar: {e}")
+                return False
             
             # Aguardar redirecionamento após login
             print("\n→ Aguardando conclusão do login...")
+            time.sleep(5)
             page.wait_for_load_state("networkidle", timeout=60000)
             
             # Verificar se login foi bem-sucedido
@@ -823,16 +755,30 @@ class NFSePlaywrightAgent:
             
             # Verificar pela URL
             current_url = page.url
+            print(f"   URL após login: {current_url}")
+            
             if "Login" not in current_url:
                 print("✓ Login assumido como bem-sucedido (redirecionado)")
                 return True
             
+            # Verificar se há mensagem de erro
+            try:
+                erros = page.locator('.alert-danger, .error, .validation-summary-errors').all()
+                if len(erros) > 0:
+                    for erro in erros:
+                        texto_erro = erro.inner_text()
+                        print(f"   ✗ Erro na página: {texto_erro}")
+                    return False
+            except:
+                pass
+            
             print("⚠️  Não foi possível confirmar o login automaticamente")
-            confirmar = input("   Login realizado? (s/n): ").strip().lower()
-            return confirmar == 's'
+            return False
             
         except Exception as e:
             print(f"✗ Erro durante login: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def navegar_notas_recebidas(self, page: Page, dias_retroativos: int = 10) -> bool:
@@ -1415,14 +1361,13 @@ class NFSePlaywrightAgent:
             print(f"    ⚠️  Erro ao baixar {file_type}: {e}")
             return False
     
-    def executar(self, quantidade: int = 999999, dias_retroativos: int = 10, certificado_ja_instalado: bool = False):
+    def executar(self, quantidade: int = 999999, dias_retroativos: int = 10):
         """
         Executa o processo completo
         
         Args:
             quantidade: Quantidade máxima de notas (padrão: todas)
             dias_retroativos: Dias para trás no filtro de data
-            certificado_ja_instalado: Se True, pula instalação (certificado já foi instalado)
         """
         context = None
         playwright = None
@@ -1430,36 +1375,23 @@ class NFSePlaywrightAgent:
         try:
             print("="*70)
             print("  AGENTE NFSe - Download Automático de Notas")
+            print(f"  Loja: {self.codloja} | Usuário: {self.usuario}")
             print("="*70)
             
-            # SEMPRE extrair informações e configurar Chrome (é específico de cada certificado)
-            # 1. Extrair informações do certificado
-            cert_info = self._get_certificate_info()
+            # 1. Configurar e iniciar navegador
+            context, page, playwright = self._setup_browser()
             
-            # 2. Configurar política do Chrome no Registry
-            print("\n→ Configurando auto-seleção de certificado...")
-            self._configure_chrome_registry_policy(cert_info)
-            
-            # 3. Instalar certificado no Windows (apenas se não foi instalado externamente)
-            if not certificado_ja_instalado:
-                self._install_certificate_windows()
-            else:
-                print("→ Certificado já instalado no Windows Store")
-            
-            # 4. Configurar e iniciar navegador (passando cert_info já extraído)
-            context, page, playwright = self._setup_browser(cert_info)
-            
-            # 5. Login com certificado
-            if not self.login_com_certificado(page):
+            # 2. Login com usuário e senha
+            if not self.login_com_usuario_senha(page):
                 print("\n✗ Falha no login. Encerrando...")
                 return
             
-            # 6. Navegar para notas recebidas
+            # 3. Navegar para notas recebidas
             if not self.navegar_notas_recebidas(page, dias_retroativos):
                 print("\n✗ Falha na navegação. Encerrando...")
                 return
             
-            # 7. Baixar notas
+            # 4. Baixar notas
             downloaded = self.baixar_ultimas_notas(page, quantidade)
             
             print("\n" + "="*70)
@@ -1489,100 +1421,68 @@ class NFSePlaywrightAgent:
                     pass
 
 
-def processar_multiplos_certificados(certificados: List[str], senha: str, download_dir: str, dias_retroativos: int):
+def processar_multiplos_usuarios(usuarios: List[dict], download_dir: str, dias_retroativos: int):
     """
-    Processa múltiplos certificados em sequência
+    Processa múltiplos usuários em sequência
     
     Args:
-        certificados: Lista de caminhos para arquivos .pfx
-        senha: Senha dos certificados
+        usuarios: Lista de dicionários com codloja, usuario, senha
         download_dir: Diretório de downloads
         dias_retroativos: Dias para trás no filtro
     """
-    total_certificados = len(certificados)
+    total_usuarios = len(usuarios)
     
+    print("\n" + "="*70)
+    print(f"  PROCESSANDO {total_usuarios} USUÁRIOS")
     print("="*70)
-    print(f"  PROCESSAMENTO DE {total_certificados} CERTIFICADO(S)")
-    print("="*70)
     
-    certificado_anterior = None
-    
-    for idx, cert_path in enumerate(certificados, 1):
-        cert_path = cert_path.strip()
-        if not cert_path:
-            continue
-            
-        print(f"\n{'='*70}")
-        print(f"  CERTIFICADO {idx}/{total_certificados}: {Path(cert_path).name}")
-        print(f"{'='*70}")
+    for idx, usuario_data in enumerate(usuarios, 1):
+        codloja = usuario_data['codloja']
+        usuario = usuario_data['usuario']
+        senha = usuario_data['senha']
+        
+        print(f"\n\n{'-'*70}")
+        print(f"  USUÁRIO {idx}/{total_usuarios}")
+        print(f"  Loja: {codloja}")
+        print(f"  CPF/CNPJ: {usuario}")
+        print(f"{'-'*70}")
         
         try:
-            # PASSO 1: Desinstalar certificado anterior (se houver)
-            if certificado_anterior:
-                print(f"\n→ Removendo certificado anterior ({Path(certificado_anterior).name})...")
-                agent_temp = NFSePlaywrightAgent(certificado_anterior, senha, download_dir)
-                info_anterior = agent_temp._get_certificate_info()
-                if info_anterior:
-                    print(f"   Removendo: {info_anterior.get('Subject', 'Desconhecido')}")
-                agent_temp._uninstall_certificate_windows()
-                time.sleep(2)  # Aguardar desinstalação
+            # Criar agente para este usuário
+            print(f"\n→ Criando agente para loja {codloja}...")
+            agent = NFSePlaywrightAgent(usuario, senha, codloja, download_dir)
             
-            # PASSO 2: Criar agente para este certificado
-            print(f"\n→ Criando agente para: {Path(cert_path).name}")
-            agent = NFSePlaywrightAgent(cert_path, senha, download_dir)
+            # Executar download
+            agent.executar(dias_retroativos=dias_retroativos)
             
-            # Verificar informações do novo certificado
-            info_novo = agent._get_certificate_info()
-            if info_novo:
-                print(f"   Novo certificado: {info_novo.get('Subject', 'Desconhecido')}")
-            
-            # PASSO 3: Instalar certificado
-            print(f"\n→ Instalando certificado {idx}/{total_certificados}...")
-            if not agent._install_certificate_windows():
-                print(f"✗ Falha ao instalar certificado - PULANDO")
-                continue
-            
-            # PASSO 4: Executar download (sem instalar novamente, pois já instalamos)
-            agent.executar(dias_retroativos=dias_retroativos, certificado_ja_instalado=True)
-            
-            # Guardar para desinstalar na próxima iteração
-            certificado_anterior = cert_path
-            
-            # PASSO 5: Aguardar antes do próximo certificado
-            if idx < total_certificados:
-                print(f"\n✓ Certificado {idx}/{total_certificados} processado!")
-                print("→ Aguardando 5 segundos para fechar navegador...")
+            # Aguardar antes do próximo usuário
+            if idx < total_usuarios:
+                print(f"\n✓ Usuário {idx}/{total_usuarios} processado!")
+                print("→ Aguardando 5 segundos antes do próximo...")
                 time.sleep(5)
             else:
-                print(f"\n✓ Último certificado processado!")
-                # Remover último certificado
-                agent._uninstall_certificate_windows()
+                print(f"\n✓ Último usuário processado!")
                 
         except Exception as e:
-            print(f"\n✗ Erro ao processar certificado {cert_path}: {e}")
+            print(f"\n✗ Erro ao processar usuário da loja {codloja}: {e}")
             import traceback
             traceback.print_exc()
-            # Tentar remover certificado mesmo com erro
-            try:
-                agent._uninstall_certificate_windows()
-            except:
-                pass
             continue
     
     print("\n" + "="*70)
-    print(f"✓ TODOS OS {total_certificados} CERTIFICADOS FORAM PROCESSADOS")
+    print(f"✓ TODOS OS {total_usuarios} USUÁRIOS FORAM PROCESSADOS")
     print("="*70)
 
 
-def buscar_certificados_oracle() -> List[dict]:
+def buscar_usuarios_oracle() -> List[dict]:
     """
-    Busca certificados ativos no Oracle
+    Busca usuários ativos no Oracle da tabela conf_munic_nfse
     
     Returns:
-        Lista de dicionários com: arquivo, conteudo (bytes), info
+        Lista de dicionários com: codloja, usuario, senha
     """
     if not ORACLE_AVAILABLE:
-        print("⚠️  Oracle não disponível - usando certificados locais")
+        print("⚠️  Oracle não disponível")
         return []
     
     oracle_user = os.getenv("ORACLE_USER")
@@ -1590,11 +1490,11 @@ def buscar_certificados_oracle() -> List[dict]:
     oracle_dsn = os.getenv("ORACLE_DSN")
     
     if not all([oracle_user, oracle_password, oracle_dsn]):
-        print("⚠️  Configurações Oracle não encontradas - usando certificados locais")
+        print("⚠️  Configurações Oracle não encontradas")
         return []
     
     try:
-        print("\n→ Buscando certificados no Oracle...")
+        print("\n→ Buscando usuários no Oracle (CONF_MUNIC_NFSE)...")
         connection = oracledb.connect(
             user=oracle_user,
             password=oracle_password,
@@ -1603,67 +1503,47 @@ def buscar_certificados_oracle() -> List[dict]:
         
         cursor = connection.cursor()
         cursor.execute("""
-            SELECT arquivo, conteudo, Info 
-            FROM cert_down_nfse 
+            SELECT codloja, usuario, senha
+            FROM CONF_MUNIC_NFSE
             WHERE INDSITUACAO = 'ATIVO'
-            ORDER BY arquivo
+            ORDER BY codloja
         """)
         
-        certificados = []
+        usuarios = []
         for row in cursor:
-            arquivo = row[0]
-            conteudo = row[1].read() if row[1] else None  # BLOB precisa ser lido
-            info = row[2]
+            codloja = row[0]
+            usuario = row[1]
+            senha = row[2]
             
-            if conteudo:
-                certificados.append({
-                    'arquivo': arquivo,
-                    'conteudo': conteudo,
-                    'info': info
+            if usuario and senha:
+                usuarios.append({
+                    'codloja': codloja,
+                    'usuario': usuario,
+                    'senha': senha
                 })
-                print(f"  ✓ {arquivo}")
-                if info:
-                    print(f"    {info}")
+                print(f"  ✓ Loja {codloja} - {usuario}")
             else:
-                print(f"  ⚠️  {arquivo} - sem conteúdo")
+                print(f"  ⚠️  Loja {codloja} - dados incompletos")
         
         cursor.close()
         connection.close()
         
-        print(f"✓ Encontrados {len(certificados)} certificados ativos")
-        return certificados
+        print(f"✓ Encontrados {len(usuarios)} usuários ativos")
+        return usuarios
         
     except Exception as e:
-        print(f"⚠️  Erro ao buscar certificados do Oracle: {e}")
-        print("   Usando certificados locais como fallback")
+        print(f"⚠️  Erro ao buscar usuários do Oracle: {e}")
+        import traceback
+        traceback.print_exc()
         return []
 
 
-def salvar_certificado_temporario(nome_arquivo: str, conteudo: bytes) -> Path:
-    """
-    Salva certificado em arquivo temporário
-    
-    Args:
-        nome_arquivo: Nome do arquivo original
-        conteudo: Conteúdo binário do certificado
-        
-    Returns:
-        Path do arquivo temporário criado
-    """
-    temp_dir = Path(tempfile.gettempdir()) / "nfse_certs"
-    temp_dir.mkdir(exist_ok=True)
-    
-    temp_file = temp_dir / nome_arquivo
-    temp_file.write_bytes(conteudo)
-    
-    return temp_file
 
 
 def main():
     """Função principal"""
     # Carregar configurações do .env
     dias_retroativos = int(os.getenv("DIAS_RETROATIVOS", "10"))
-    senha = os.getenv("SENHA_CERTIFICADO", "condor")
     download_dir = os.getenv("DIRETORIO_DOWNLOADS", "./downloads_nfse")
     
     print("\n" + "="*70)
@@ -1673,38 +1553,34 @@ def main():
     print(f"  Diretório downloads: {download_dir}")
     print("="*70)
     
-    # Tentar buscar certificados do Oracle primeiro
-    certificados_oracle = buscar_certificados_oracle()
+    # Buscar usuários do Oracle
+    usuarios_oracle = buscar_usuarios_oracle()
     
-    certificados_paths = []
-    
-    if certificados_oracle:
-        print("\n→ Usando certificados do Oracle")
-        # Salvar certificados em arquivos temporários
-        for cert_data in certificados_oracle:
-            temp_path = salvar_certificado_temporario(cert_data['arquivo'], cert_data['conteudo'])
-            certificados_paths.append(str(temp_path))
-            print(f"  → Certificado temporário: {temp_path.name}")
-    else:
-        # Fallback: usar certificados do .env
-        print("\n→ Usando certificados locais (.env)")
-        certificados_str = os.getenv("CERTIFICADOS", "certificados/condor_2026.pfx")
-        certificados_paths = [c.strip() for c in certificados_str.split(',') if c.strip()]
+    if not usuarios_oracle:
+        print("\n✗ Nenhum usuário encontrado no Oracle")
+        print("   Verifique a tabela CONF_MUNIC_NFSE")
+        return
     
     print("\n" + "="*70)
-    print(f"  Total de certificados: {len(certificados_paths)}")
-    for idx, cert in enumerate(certificados_paths, 1):
-        print(f"    {idx}. {Path(cert).name}")
+    print(f"  Total de usuários: {len(usuarios_oracle)}")
+    for idx, usuario_data in enumerate(usuarios_oracle, 1):
+        print(f"    {idx}. Loja {usuario_data['codloja']} - {usuario_data['usuario']}")
     print("="*70)
     
     try:
-        if len(certificados_paths) == 1:
-            # Processar um único certificado
-            agent = NFSePlaywrightAgent(certificados_paths[0], senha, download_dir)
+        if len(usuarios_oracle) == 1:
+            # Processar um único usuário
+            usuario_data = usuarios_oracle[0]
+            agent = NFSePlaywrightAgent(
+                usuario_data['usuario'], 
+                usuario_data['senha'], 
+                usuario_data['codloja'],
+                download_dir
+            )
             agent.executar(dias_retroativos=dias_retroativos)
         else:
-            # Processar múltiplos certificados
-            processar_multiplos_certificados(certificados_paths, senha, download_dir, dias_retroativos)
+            # Processar múltiplos usuários
+            processar_multiplos_usuarios(usuarios_oracle, download_dir, dias_retroativos)
     except Exception as e:
         print(f"\n✗ Erro: {e}")
         import traceback

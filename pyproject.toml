@@ -12,4 +12,6 @@ dependencies = [
     "pyautogui>=0.9.54",
     "pywinauto>=0.6.8; sys_platform == 'win32'",
     "oracledb>=3.4.2",
+    "pandas>=3.0.0",
+    "openpyxl>=3.1.5",
 ]
